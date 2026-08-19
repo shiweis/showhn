@@ -11,7 +11,11 @@ import { eq } from "drizzle-orm";
 import * as schema from "../src/lib/db/schema";
 import { enqueuePostTasks } from "../src/lib/queue";
 import { refreshStalePosts } from "../src/lib/refresh";
+import { syncPostToFts } from "../src/lib/db/fts";
 import path from "path";
+import dotenv from "dotenv";
+
+dotenv.config({ path: path.join(process.cwd(), ".env.local"), override: false });
 
 const DB_PATH = process.env.DATABASE_PATH || path.join(process.cwd(), "data", "showhn.db");
 const sqlite = new Database(DB_PATH);
@@ -138,6 +142,8 @@ function upsertPost(hit: AlgoliaHit) {
     // New posts get higher priority so they're processed before backfill
     enqueuePostTasks(db, id, hasUrl, 10);
   }
+
+  syncPostToFts(sqlite, id);
 
   return !existing;
 }

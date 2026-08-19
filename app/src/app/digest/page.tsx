@@ -5,8 +5,6 @@ import { getDigest } from "@/lib/db/queries";
 import Link from "next/link";
 import type { Metadata } from "next";
 
-export const revalidate = 3600; // refresh every hour — digest data changes slowly
-
 export const metadata: Metadata = {
   title: "Daily Digest — HN Showcase",
   description: "Today's best Show HN projects, curated by AI.",

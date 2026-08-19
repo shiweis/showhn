@@ -13,7 +13,12 @@ function safeParseTier(value: string | null | undefined): Tier | null {
 
 function safeParseJsonArray(json: string | null | undefined): string[] {
   if (!json) return [];
-  try { return JSON.parse(json); } catch { return []; }
+  try {
+    const parsed: unknown = JSON.parse(json);
+    return Array.isArray(parsed) ? parsed.filter((item): item is string => typeof item === "string") : [];
+  } catch {
+    return [];
+  }
 }
 import Image from "next/image";
 import Link from "next/link";
@@ -21,8 +26,7 @@ import { notFound } from "next/navigation";
 import type { Metadata } from "next";
 import { ShareButton } from "@/components/share-button";
 import { PostCard } from "@/components/post-card";
-
-export const revalidate = 3600; // refresh every hour — post data changes slowly
+import { JsonLd } from "@/components/json-ld";
 
 type Props = {
   params: Promise<{ id: string; slug: string }>;
@@ -167,10 +171,7 @@ export default async function PostPage({ params }: Props) {
 
   return (
     <div className="max-w-4xl mx-auto">
-      <script
-        type="application/ld+json"
-        dangerouslySetInnerHTML={{ __html: JSON.stringify(structuredData) }}
-      />
+      <JsonLd data={structuredData} />
       <Link
         href="/"
         className="inline-flex items-center gap-1 text-sm text-muted-foreground hover:text-foreground transition-colors mb-4"

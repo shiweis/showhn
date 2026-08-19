@@ -3,56 +3,30 @@
  * Used by worker, rescore, and backfill scripts.
  */
 
-import fs from "fs";
-import path from "path";
-
-const SCREENSHOT_DIR = path.join(process.cwd(), "public", "screenshots");
-
-/** Block requests to private/internal network addresses. */
-function isPrivateUrl(url: string): boolean {
-  try {
-    const parsed = new URL(url);
-    const hostname = parsed.hostname.toLowerCase();
-    // Block localhost, link-local, metadata endpoints, and private IPs
-    if (hostname === "localhost" || hostname === "127.0.0.1" || hostname === "[::1]") return true;
-    if (hostname.startsWith("169.254.") || hostname === "metadata.google.internal") return true;
-    if (hostname.startsWith("10.") || hostname.startsWith("192.168.")) return true;
-    if (/^172\.(1[6-9]|2\d|3[01])\./.test(hostname)) return true;
-    if (parsed.protocol !== "http:" && parsed.protocol !== "https:") return true;
-    return false;
-  } catch {
-    return true;
-  }
-}
+import { fetchPublicResource } from "./public-url";
 
 const MAX_RESPONSE_SIZE = 5 * 1024 * 1024; // 5MB max
 
 /** Fetch a URL and extract text content from the HTML. */
 export async function fetchPageContent(url: string): Promise<string> {
   try {
-    if (isPrivateUrl(url)) return "";
-
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 10000);
-
-    const res = await fetch(url, {
-      signal: controller.signal,
-      redirect: "follow",
+    const res = await fetchPublicResource(url, {
+      timeoutMs: 10_000,
+      maxBytes: MAX_RESPONSE_SIZE,
       headers: {
         "User-Agent":
           "Mozilla/5.0 (compatible; HNShowcase/1.0; +https://hnshowcase.com)",
         Accept: "text/html,application/xhtml+xml",
       },
     });
-    clearTimeout(timeout);
-
     if (!res.ok) return "";
 
-    // Check content-length before reading body to avoid huge responses
-    const contentLength = parseInt(res.headers.get("content-length") || "0", 10);
-    if (contentLength > MAX_RESPONSE_SIZE) return "";
+    const contentType = res.headers.get("content-type")?.toLowerCase() || "";
+    if (contentType && !contentType.startsWith("text/") && !contentType.includes("xhtml")) {
+      return "";
+    }
 
-    const html = await res.text();
+    const html = new TextDecoder().decode(res.body);
 
     return html
       .replace(/<script[^>]*>[\s\S]*?<\/script>/gi, "")
@@ -68,13 +42,23 @@ export async function fetchPageContent(url: string): Promise<string> {
 
 /** Parse a GitHub URL into owner/repo. Returns null for non-GitHub URLs. */
 export function parseGitHubRepo(url: string): { owner: string; repo: string } | null {
-  const match = url.match(/^https?:\/\/github\.com\/([^/]+)\/([^/]+)/);
-  if (!match) return null;
-  // Skip GitHub special pages (marketplace, explore, sponsors, etc.)
-  const specialPaths = ["marketplace", "explore", "sponsors", "topics", "settings", "orgs", "features", "enterprise", "pricing"];
-  if (specialPaths.includes(match[1].toLowerCase())) return null;
-  const repo = match[2].replace(/\.git$/, "");
-  return { owner: match[1], repo };
+  try {
+    const parsed = new URL(url);
+    if (parsed.protocol !== "http:" && parsed.protocol !== "https:") return null;
+    if (parsed.hostname.toLowerCase() !== "github.com" && parsed.hostname.toLowerCase() !== "www.github.com") {
+      return null;
+    }
+    const [ownerRaw, repoRaw] = parsed.pathname.split("/").filter(Boolean);
+    if (!ownerRaw || !repoRaw) return null;
+    const owner = decodeURIComponent(ownerRaw);
+    const repo = decodeURIComponent(repoRaw).replace(/\.git$/, "");
+    if (!/^[A-Za-z0-9_.-]+$/.test(owner) || !/^[A-Za-z0-9_.-]+$/.test(repo)) return null;
+    const specialPaths = ["marketplace", "explore", "sponsors", "topics", "settings", "orgs", "features", "enterprise", "pricing"];
+    if (specialPaths.includes(owner.toLowerCase())) return null;
+    return { owner, repo };
+  } catch {
+    return null;
+  }
 }
 
 /** Fetch GitHub repo metadata (stars, language, description) via the GitHub API. */
@@ -83,9 +67,6 @@ export async function fetchGitHubMeta(
   repo: string
 ): Promise<{ stars: number; language: string | null; description: string | null } | null> {
   try {
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 10000);
-
     const headers: Record<string, string> = {
       Accept: "application/vnd.github.v3+json",
       "User-Agent": "HNShowcase/1.0",
@@ -95,14 +76,17 @@ export async function fetchGitHubMeta(
       headers.Authorization = `Bearer ${token}`;
     }
 
-    const res = await fetch(`https://api.github.com/repos/${owner}/${repo}`, {
-      signal: controller.signal,
-      headers,
-    });
-    clearTimeout(timeout);
+    const res = await fetchPublicResource(
+      `https://api.github.com/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}`,
+      {
+        timeoutMs: 10_000,
+        maxBytes: 1024 * 1024,
+        headers,
+      },
+    );
 
     if (!res.ok) return null;
-    const data = await res.json();
+    const data = JSON.parse(new TextDecoder().decode(res.body));
 
     return {
       stars: data.stargazers_count ?? 0,
@@ -118,13 +102,13 @@ export async function fetchGitHubMeta(
 export async function fetchGitHubReadme(owner: string, repo: string): Promise<string> {
   for (const branch of ["main", "master"]) {
     try {
-      const url = `https://raw.githubusercontent.com/${owner}/${repo}/${branch}/README.md`;
-      const controller = new AbortController();
-      const timeout = setTimeout(() => controller.abort(), 5000);
-      const res = await fetch(url, { signal: controller.signal });
-      clearTimeout(timeout);
+      const url = `https://raw.githubusercontent.com/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/${branch}/README.md`;
+      const res = await fetchPublicResource(url, {
+        timeoutMs: 5_000,
+        maxBytes: 512 * 1024,
+      });
       if (res.ok) {
-        const text = await res.text();
+        const text = new TextDecoder().decode(res.body);
         return text.slice(0, 5000);
       }
     } catch {
@@ -132,14 +116,4 @@ export async function fetchGitHubReadme(owner: string, repo: string): Promise<st
     }
   }
   return "";
-}
-
-/** Load a screenshot from disk as base64. Returns undefined if not found. */
-export function loadScreenshot(postId: number, screenshotDir?: string): string | undefined {
-  const dir = screenshotDir || SCREENSHOT_DIR;
-  for (const ext of ["webp", "png"]) {
-    const p = path.join(dir, `${postId}_thumb.${ext}`);
-    if (fs.existsSync(p)) return fs.readFileSync(p).toString("base64");
-  }
-  return undefined;
 }

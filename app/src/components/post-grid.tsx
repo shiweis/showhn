@@ -3,11 +3,9 @@
 import { useCallback, useEffect, useRef, useState, useTransition } from "react";
 import { PostCard } from "@/components/post-card";
 import { loadMorePosts } from "@/app/actions";
-import type { Post, AiAnalysis } from "@/lib/db/schema";
+import type { PostCardWithAnalysis } from "@/lib/db/card-types";
 
 const PAGE_SIZE = 48;
-
-type PostWithAnalysis = Post & { analysis: AiAnalysis | null };
 
 export function PostGrid({
   initialPosts,
@@ -15,7 +13,7 @@ export function PostGrid({
   sort,
   categories,
 }: {
-  initialPosts: PostWithAnalysis[];
+  initialPosts: PostCardWithAnalysis[];
   time: string;
   sort: string;
   categories: string[];
@@ -23,6 +21,7 @@ export function PostGrid({
   const [posts, setPosts] = useState(initialPosts);
   const [hasMore, setHasMore] = useState(initialPosts.length >= PAGE_SIZE);
   const [isPending, startTransition] = useTransition();
+  const [loadError, setLoadError] = useState("");
   const sentinelRef = useRef<HTMLDivElement>(null);
   const loadingRef = useRef(false);
 
@@ -30,23 +29,34 @@ export function PostGrid({
   useEffect(() => {
     setPosts(initialPosts);
     setHasMore(initialPosts.length >= PAGE_SIZE);
+    setLoadError("");
+    loadingRef.current = false;
   }, [initialPosts]);
 
   const loadMore = useCallback(() => {
     if (loadingRef.current || !hasMore) return;
     loadingRef.current = true;
+    setLoadError("");
 
     startTransition(async () => {
-      const { posts: newPosts } = await loadMorePosts({
-        time,
-        sort,
-        categories,
-        offset: posts.length,
-        limit: PAGE_SIZE,
-      });
-      setPosts((prev) => [...prev, ...newPosts]);
-      if (newPosts.length < PAGE_SIZE) setHasMore(false);
-      loadingRef.current = false;
+      try {
+        const { posts: newPosts } = await loadMorePosts({
+          time,
+          sort,
+          categories,
+          offset: posts.length,
+          limit: PAGE_SIZE,
+        });
+        setPosts((previous) => {
+          const existing = new Set(previous.map((post) => post.id));
+          return [...previous, ...newPosts.filter((post) => !existing.has(post.id))];
+        });
+        if (newPosts.length < PAGE_SIZE) setHasMore(false);
+      } catch {
+        setLoadError("Could not load more projects. Please try again.");
+      } finally {
+        loadingRef.current = false;
+      }
     });
   }, [hasMore, posts.length, time, sort, categories, startTransition]);
 
@@ -74,7 +84,7 @@ export function PostGrid({
         ))}
       </div>
 
-      {hasMore && (
+      {(hasMore || loadError) && (
         <div ref={sentinelRef} className="flex justify-center py-8">
           {isPending ? (
             <div className="flex items-center gap-2 text-sm text-muted-foreground">
@@ -83,6 +93,16 @@ export function PostGrid({
                 <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
               </svg>
               Loading more...
+            </div>
+          ) : loadError ? (
+            <div className="text-center" role="status" aria-live="polite">
+              <p className="mb-2 text-sm text-destructive">{loadError}</p>
+              <button
+                onClick={loadMore}
+                className="px-4 py-2 text-sm border border-border rounded-lg hover:bg-muted transition-colors"
+              >
+                Try again
+              </button>
             </div>
           ) : (
             <button

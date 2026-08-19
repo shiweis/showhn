@@ -25,7 +25,7 @@ import path from "path";
 import fs from "fs";
 import dotenv from "dotenv";
 
-dotenv.config({ path: path.join(process.cwd(), ".env.local"), override: true });
+dotenv.config({ path: path.join(process.cwd(), ".env.local"), override: false });
 
 const DB_PATH = process.env.DATABASE_PATH || path.join(process.cwd(), "data", "showhn.db");
 const OUT_DIR = path.join(process.cwd(), "data", "opportunities");

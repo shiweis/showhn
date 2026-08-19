@@ -4,10 +4,10 @@ import { FilterBar } from "@/components/filter-bar";
 import { getPosts, getCategories } from "@/lib/db/queries";
 import { notFound } from "next/navigation";
 import type { Metadata } from "next";
+import { JsonLd } from "@/components/json-ld";
+import { normalizeSort, normalizeTime } from "@/lib/post-filters";
 
-export const revalidate = 3600; // 1 hour — category pages are less volatile
-
-import { CATEGORY_MAP, categoryToSlug } from "@/lib/categories";
+import { CATEGORY_MAP } from "@/lib/categories";
 
 // SEO descriptions per category
 const CATEGORY_DESCRIPTIONS: Record<string, string> = {
@@ -65,10 +65,8 @@ export default async function CategoryPage({ params, searchParams }: Props) {
   if (!categoryName) notFound();
 
   const sp = await searchParams;
-  const time = (typeof sp.t === "string" ? sp.t : "all") as
-    | "today" | "week" | "month" | "all";
-  const sort = (typeof sp.sort === "string" ? sp.sort : "interesting") as
-    | "newest" | "points" | "comments" | "interesting";
+  const time = normalizeTime(sp.t, "all");
+  const sort = normalizeSort(sp.sort, "interesting");
 
   const [{ posts, total }, allCategories] = await Promise.all([
     getPosts({ time, sort, categories: [categoryName] }),
@@ -108,10 +106,8 @@ export default async function CategoryPage({ params, searchParams }: Props) {
       )}
 
       {/* Structured data */}
-      <script
-        type="application/ld+json"
-        dangerouslySetInnerHTML={{
-          __html: JSON.stringify({
+      <JsonLd
+        data={{
             "@context": "https://schema.org",
             "@type": "CollectionPage",
             name: `${categoryName} Projects — HN Showcase`,
@@ -123,7 +119,6 @@ export default async function CategoryPage({ params, searchParams }: Props) {
               name: "HN Showcase",
               url: "https://hnshowcase.com",
             },
-          }),
         }}
       />
     </>

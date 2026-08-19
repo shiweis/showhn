@@ -12,8 +12,9 @@ import Database from "better-sqlite3";
 import { chromium, type Browser } from "playwright";
 import path from "path";
 import dotenv from "dotenv";
+import { installPublicNetworkGuard } from "../src/lib/browser-security";
 
-dotenv.config({ path: path.join(process.cwd(), ".env.local"), override: true });
+dotenv.config({ path: path.join(process.cwd(), ".env.local"), override: false });
 
 const DB_PATH = process.env.DATABASE_PATH || path.join(process.cwd(), "data", "showhn.db");
 const sqlite = new Database(DB_PATH);
@@ -29,9 +30,11 @@ const VIEWPORT = { width: 1280, height: 800 };
 async function extractPageText(browser: Browser, url: string): Promise<string> {
   const context = await browser.newContext({
     viewport: VIEWPORT,
+    serviceWorkers: "block",
     userAgent:
       "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
   });
+  await installPublicNetworkGuard(context);
 
   try {
     const page = await context.newPage();
@@ -54,13 +57,13 @@ async function extractPageText(browser: Browser, url: string): Promise<string> {
 
 async function main() {
   const posts = sqlite.prepare(`
-    SELECT id, url FROM posts
+    SELECT id, url, title FROM posts
     WHERE status = 'active'
       AND url IS NOT NULL
       AND url NOT LIKE '%github.com%'
       AND (page_content IS NULL OR LENGTH(page_content) < 500)
     ORDER BY id DESC
-  `).all() as { id: number; url: string }[];
+  `).all() as { id: number; url: string; title: string }[];
 
   console.log(`[backfill-pw] ${posts.length} posts need Playwright render`);
   console.log(`[backfill-pw] Concurrency: ${CONCURRENCY}`);
@@ -70,9 +73,7 @@ async function main() {
     return;
   }
 
-  const browser = await chromium.launch({
-    args: ["--no-sandbox", "--disable-setuid-sandbox"],
-  });
+  const browser = await chromium.launch();
   console.log("[backfill-pw] Browser launched\n");
 
   const updateStmt = sqlite.prepare(`UPDATE posts SET page_content = ? WHERE id = ?`);
@@ -99,15 +100,6 @@ async function main() {
       }
     }
   }
-
-  // Need to read title for logging
-  const postsWithTitle = posts.map((p) => {
-    const row = sqlite.prepare("SELECT title FROM posts WHERE id = ?").get(p.id) as { title: string } | undefined;
-    return { ...p, title: row?.title || "" };
-  });
-  // Replace posts reference for workers
-  posts.length = 0;
-  posts.push(...postsWithTitle);
 
   const workers = Array.from({ length: Math.min(CONCURRENCY, posts.length) }, () => worker());
   await Promise.all(workers);

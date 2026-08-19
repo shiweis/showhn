@@ -3,10 +3,15 @@
 import { getPosts } from "@/lib/db/queries";
 import { db } from "@/lib/db";
 import { subscribers } from "@/lib/db/schema";
-import type { Post, AiAnalysis } from "@/lib/db/schema";
+import type { PostCardWithAnalysis } from "@/lib/db/card-types";
+import { headers } from "next/headers";
+import {
+  normalizeCategories,
+  normalizeInteger,
+  normalizeSort,
+  normalizeTime,
+} from "@/lib/post-filters";
 
-const VALID_TIMES = ["today", "week", "month", "all"] as const;
-const VALID_SORTS = ["newest", "points", "comments", "interesting"] as const;
 const MAX_LIMIT = 100;
 
 export async function loadMorePosts({
@@ -21,22 +26,20 @@ export async function loadMorePosts({
   categories?: string[];
   offset?: number;
   limit?: number;
-}): Promise<{ posts: (Post & { analysis: AiAnalysis | null })[] }> {
-  const safeTime = VALID_TIMES.includes(time as typeof VALID_TIMES[number])
-    ? (time as typeof VALID_TIMES[number])
-    : "week";
-  const safeSort = VALID_SORTS.includes(sort as typeof VALID_SORTS[number])
-    ? (sort as typeof VALID_SORTS[number])
-    : "newest";
-  const safeLimit = Math.max(1, Math.min(limit, MAX_LIMIT));
-  const safeOffset = Math.max(0, offset);
+}): Promise<{ posts: PostCardWithAnalysis[] }> {
+  const safeTime = normalizeTime(time);
+  const safeSort = normalizeSort(sort);
+  const safeLimit = normalizeInteger(limit, 48, 1, MAX_LIMIT);
+  const safeOffset = normalizeInteger(offset, 0, 0, 1_000_000);
+  const safeCategories = normalizeCategories(categories);
 
   const { posts } = await getPosts({
     time: safeTime,
     sort: safeSort,
-    categories,
+    categories: safeCategories,
     offset: safeOffset,
     limit: safeLimit,
+    includeTotal: false,
   });
   return { posts };
 }
@@ -44,13 +47,13 @@ export async function loadMorePosts({
 // Simple in-memory rate limiter for subscribe action
 const subscribeAttempts = new Map<string, number[]>();
 const RATE_LIMIT_WINDOW = 60_000; // 1 minute
-const RATE_LIMIT_MAX = 5; // max 5 attempts per window
+const RATE_LIMIT_MAX = 5; // max 5 attempts per email/window
+const RATE_LIMIT_ORIGIN_MAX = 20; // cap unique-address signup spam
 
-function isRateLimited(email: string): boolean {
+function isRateLimited(key: string, maximum: number): boolean {
   const now = Date.now();
-  const key = email.slice(0, 100); // prevent huge keys
   const attempts = (subscribeAttempts.get(key) || []).filter(t => now - t < RATE_LIMIT_WINDOW);
-  if (attempts.length >= RATE_LIMIT_MAX) return true;
+  if (attempts.length >= maximum) return true;
   attempts.push(now);
   subscribeAttempts.set(key, attempts);
   // Periodic cleanup: if map grows large, clear old entries
@@ -65,12 +68,29 @@ export async function subscribe({
   email: string;
   frequency: "daily" | "weekly";
 }): Promise<{ ok: boolean; error?: string }> {
+  if (typeof email !== "string" || email.length > 254) {
+    return { ok: false, error: "Please enter a valid email address." };
+  }
+  if (frequency !== "daily" && frequency !== "weekly") {
+    return { ok: false, error: "Please choose a valid digest frequency." };
+  }
   const trimmed = email.trim().toLowerCase();
   if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(trimmed)) {
     return { ok: false, error: "Please enter a valid email address." };
   }
 
-  if (isRateLimited(trimmed)) {
+  const requestHeaders = await headers();
+  const origin = (
+    requestHeaders.get("cf-connecting-ip") ||
+    requestHeaders.get("x-real-ip") ||
+    requestHeaders.get("x-forwarded-for")?.split(",")[0] ||
+    "unknown"
+  ).trim().slice(0, 100);
+
+  if (
+    isRateLimited(`email:${trimmed}`, RATE_LIMIT_MAX) ||
+    isRateLimited(`origin:${origin}`, RATE_LIMIT_ORIGIN_MAX)
+  ) {
     return { ok: false, error: "Too many attempts. Please try again later." };
   }
 

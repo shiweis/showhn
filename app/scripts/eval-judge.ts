@@ -32,9 +32,9 @@ import {
   AUDITED_RECENT_ENTRIES,
 } from "../src/lib/ai/judge-ground-truth";
 import { MINIMAX_M3_JUDGE_PROMPT_V3 } from "../src/lib/ai/judge-prompts";
-import { loadScreenshot } from "../src/lib/fetchers";
+import { loadScreenshot } from "./lib/screenshot-files";
 
-dotenv.config({ path: path.join(process.cwd(), ".env.local"), override: true });
+dotenv.config({ path: path.join(process.cwd(), ".env.local"), override: false });
 
 type PromptName = "production" | "minimax-m3-v1" | "minimax-m3-v2" | "minimax-m3-v3";
 

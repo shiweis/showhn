@@ -4,6 +4,7 @@ import { useRouter, useSearchParams } from "next/navigation";
 import { useTransition, useOptimistic, useCallback } from "react";
 import { Badge } from "@/components/ui/badge";
 import { cn } from "@/lib/utils";
+import { normalizeCategories, normalizeSort, normalizeTime } from "@/lib/post-filters";
 
 const TIME_TABS = [
   { label: "Today", value: "today" },
@@ -31,9 +32,9 @@ export function FilterBar({ categories, totalCount }: { categories: string[]; to
   const [isPending, startTransition] = useTransition();
 
   const currentState: FilterState = {
-    time: searchParams.get("t") || "week",
-    sort: searchParams.get("sort") || "newest",
-    categories: searchParams.getAll("cat"),
+    time: normalizeTime(searchParams.get("t")),
+    sort: normalizeSort(searchParams.get("sort")),
+    categories: normalizeCategories(searchParams.getAll("cat")),
   };
 
   const [optimisticState, setOptimisticState] = useOptimistic(currentState);

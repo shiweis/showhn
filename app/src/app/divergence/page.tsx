@@ -3,8 +3,6 @@ import { getDivergenceData } from "@/lib/db/trends-queries";
 import Link from "next/link";
 import type { Metadata } from "next";
 
-export const revalidate = 3600; // refresh every hour — divergence data changes slowly
-
 export const metadata: Metadata = {
   title: "AI vs HN — HN Showcase",
   description: "Where our AI and Hacker News disagree: hidden gems the crowd missed, and overhyped posts our AI didn't buy.",

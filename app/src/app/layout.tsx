@@ -1,4 +1,6 @@
 import type { Metadata } from "next";
+import { headers } from "next/headers";
+import { JsonLd } from "@/components/json-ld";
 import { Geist, Geist_Mono, Sora } from "next/font/google";
 import Link from "next/link";
 import { ThemeProvider } from "@/components/theme-provider";
@@ -48,20 +50,23 @@ export const metadata: Metadata = {
   },
 };
 
-export default function RootLayout({
+export default async function RootLayout({
   children,
 }: Readonly<{
   children: React.ReactNode;
 }>) {
+  const nonce = (await headers()).get("x-nonce") || undefined;
   return (
     <html lang="en" suppressHydrationWarning>
       <head>
         <script
+          nonce={nonce}
           defer
           src="https://analytics.hnshowcase.com/script.js"
           data-website-id="82df6e49-8888-45de-8ea7-818be6d8bc12"
         />
         <script
+          nonce={nonce}
           dangerouslySetInnerHTML={{
             __html: `(function(){try{var t=localStorage.getItem("theme");if(t==="dark"||(!t&&window.matchMedia("(prefers-color-scheme:dark)").matches))document.documentElement.classList.add("dark")}catch(e){}})()`,
           }}
@@ -70,10 +75,8 @@ export default function RootLayout({
       <body
         className={`${geistSans.variable} ${geistMono.variable} ${sora.variable} antialiased`}
       >
-        <script
-          type="application/ld+json"
-          dangerouslySetInnerHTML={{
-            __html: JSON.stringify({
+        <JsonLd
+          data={{
               "@context": "https://schema.org",
               "@type": "WebSite",
               name: "HN Showcase",
@@ -88,7 +91,6 @@ export default function RootLayout({
                 },
                 "query-input": "required name=search_term_string",
               },
-            }),
           }}
         />
         <ThemeProvider>

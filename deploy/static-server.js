@@ -18,16 +18,23 @@ const MIME_TYPES = {
 };
 
 const server = http.createServer((req, res) => {
+  if (req.method !== "GET" && req.method !== "HEAD") {
+    res.writeHead(405, { Allow: "GET, HEAD" });
+    res.end("Method not allowed");
+    return;
+  }
+
+  const pathname = new URL(req.url, "http://localhost").pathname;
   // Only serve /screenshots/*
-  if (!req.url.startsWith("/screenshots/")) {
+  if (!pathname.startsWith("/screenshots/")) {
     res.writeHead(404);
     res.end("Not found");
     return;
   }
 
-  const filename = path.basename(req.url);
-  // Sanitize — no directory traversal
-  if (filename.includes("..") || filename.includes("/")) {
+  const filename = path.basename(pathname);
+  // Generated screenshots have numeric HN IDs and an optional thumbnail suffix.
+  if (!/^\d+(?:_thumb)?\.(?:webp|png|jpe?g)$/i.test(filename)) {
     res.writeHead(400);
     res.end("Bad request");
     return;
@@ -38,7 +45,7 @@ const server = http.createServer((req, res) => {
   const contentType = MIME_TYPES[ext] || "application/octet-stream";
 
   fs.stat(filePath, (err, stats) => {
-    if (err) {
+    if (err || !stats.isFile()) {
       res.writeHead(404);
       res.end("Not found");
       return;
@@ -47,12 +54,18 @@ const server = http.createServer((req, res) => {
     res.writeHead(200, {
       "Content-Type": contentType,
       "Content-Length": stats.size,
-      "Cache-Control": "public, max-age=604800, immutable",
+      "Cache-Control": "public, max-age=86400, stale-while-revalidate=604800",
     });
-    fs.createReadStream(filePath).pipe(res);
+    if (req.method === "HEAD") {
+      res.end();
+      return;
+    }
+    const stream = fs.createReadStream(filePath);
+    stream.on("error", () => res.destroy());
+    stream.pipe(res);
   });
 });
 
-server.listen(PORT, "0.0.0.0", () => {
-  console.log(`[static] Screenshot server listening on :${PORT}`);
+server.listen(PORT, "127.0.0.1", () => {
+  console.log(`[static] Screenshot server listening on 127.0.0.1:${PORT}`);
 });

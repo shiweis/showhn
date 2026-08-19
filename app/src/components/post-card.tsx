@@ -1,7 +1,7 @@
 import { Badge } from "@/components/ui/badge";
 import Image from "next/image";
 import Link from "next/link";
-import type { Post, AiAnalysis } from "@/lib/db/schema";
+import type { AnalysisCardData, PostCardData } from "@/lib/db/card-types";
 import { TIERS, TIER_LABELS, TIER_DOTS, type Tier, getVibeTagColor } from "@/lib/ai/llm";
 import { categoryToSlug } from "@/lib/categories";
 
@@ -12,7 +12,12 @@ function safeParseTier(value: string | null | undefined): Tier | null {
 
 function safeParseJsonArray(json: string | null | undefined): string[] {
   if (!json) return [];
-  try { return JSON.parse(json); } catch { return []; }
+  try {
+    const parsed: unknown = JSON.parse(json);
+    return Array.isArray(parsed) ? parsed.filter((item): item is string => typeof item === "string") : [];
+  } catch {
+    return [];
+  }
 }
 
 // Tier styling — each tier gets a distinct color personality
@@ -93,8 +98,8 @@ export function PostCard({
   analysis,
   compact,
 }: {
-  post: Post;
-  analysis?: AiAnalysis | null;
+  post: PostCardData;
+  analysis?: AnalysisCardData | null;
   compact?: boolean;
 }) {
   const slug = slugify(post.title);

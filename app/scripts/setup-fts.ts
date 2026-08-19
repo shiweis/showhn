@@ -6,6 +6,9 @@
 
 import Database from "better-sqlite3";
 import path from "path";
+import dotenv from "dotenv";
+
+dotenv.config({ path: path.join(process.cwd(), ".env.local"), override: false });
 
 const DB_PATH = process.env.DATABASE_PATH || path.join(process.cwd(), "data", "showhn.db");
 const db = new Database(DB_PATH);
@@ -46,3 +49,4 @@ const tx = db.transaction(() => {
 
 tx();
 console.log(`[fts] Indexed ${posts.length} posts`);
+db.close();

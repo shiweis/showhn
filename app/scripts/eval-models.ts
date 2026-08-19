@@ -34,9 +34,9 @@ import {
   type UsageStats,
 } from "../src/lib/ai/llm";
 import { BENCHMARK_ENTRIES } from "../src/lib/ai/benchmark";
-import { loadScreenshot } from "../src/lib/fetchers";
+import { loadScreenshot } from "./lib/screenshot-files";
 
-dotenv.config({ path: path.join(process.cwd(), ".env.local"), override: true });
+dotenv.config({ path: path.join(process.cwd(), ".env.local"), override: false });
 
 // ─── Pricing (USD per 1M tokens) ───────────────────────────────────────────
 // Used for cost estimates. Update as providers shift.

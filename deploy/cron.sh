@@ -15,27 +15,32 @@
 set -euo pipefail
 
 export PATH="/usr/local/bin:/usr/bin:/bin:$PATH"
-export HOME="/root"
 
 APP_DIR="$(cd "$(dirname "$0")/../app" && pwd)"
 LOG_DIR="$APP_DIR/../logs"
 mkdir -p "$LOG_DIR"
 
-# Source env vars for API keys
-[ -f "$APP_DIR/.env.local" ] && export $(grep -v '^#' "$APP_DIR/.env.local" | xargs)
+# Source the trusted local environment without word-splitting or globbing its
+# values. The file is gitignored and should be readable only by the app user.
+if [ -f "$APP_DIR/.env.local" ]; then
+  set -a
+  # shellcheck source=/dev/null
+  source "$APP_DIR/.env.local"
+  set +a
+fi
 
 cd "$APP_DIR"
 
 case "${1:-}" in
   ingest)
-    npx tsx scripts/ingest.ts >> "$LOG_DIR/ingest.log" 2>&1
+    ./node_modules/.bin/tsx scripts/ingest.ts >> "$LOG_DIR/ingest.log" 2>&1
     ;;
   fts)
-    npx tsx scripts/setup-fts.ts >> "$LOG_DIR/fts.log" 2>&1
+    ./node_modules/.bin/tsx scripts/setup-fts.ts >> "$LOG_DIR/fts.log" 2>&1
     ;;
   all)
-    npx tsx scripts/ingest.ts >> "$LOG_DIR/ingest.log" 2>&1
-    npx tsx scripts/setup-fts.ts >> "$LOG_DIR/fts.log" 2>&1
+    ./node_modules/.bin/tsx scripts/ingest.ts >> "$LOG_DIR/ingest.log" 2>&1
+    ./node_modules/.bin/tsx scripts/setup-fts.ts >> "$LOG_DIR/fts.log" 2>&1
     ;;
   *)
     echo "Usage: $0 {ingest|fts|all}"

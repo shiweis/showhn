@@ -231,6 +231,7 @@ export function completeTask(db: DB, taskId: number): void {
  */
 export function failTask(db: DB, taskId: number, error: string): void {
   const now = Math.floor(Date.now() / 1000);
+  const safeError = error.replace(/\s+/g, " ").slice(0, 2000);
   const task = db
     .select()
     .from(schema.taskQueue)
@@ -244,13 +245,13 @@ export function failTask(db: DB, taskId: number, error: string): void {
 
   if (attempts >= maxAttempts) {
     db.update(schema.taskQueue)
-      .set({ status: "failed", completedAt: now, error })
+      .set({ status: "failed", completedAt: now, error: safeError })
       .where(eq(schema.taskQueue.id, taskId))
       .run();
   } else {
     // Re-queue for retry
     db.update(schema.taskQueue)
-      .set({ status: "pending", startedAt: null, error })
+      .set({ status: "pending", startedAt: null, error: safeError })
       .where(eq(schema.taskQueue.id, taskId))
       .run();
   }

@@ -11,7 +11,7 @@ hnshowcase.com {
 
     # Cache screenshots aggressively
     @screenshots path /screenshots/*
-    header @screenshots Cache-Control "public, max-age=604800, immutable"
+    header @screenshots Cache-Control "public, max-age=86400, stale-while-revalidate=604800"
 
     # Cache static assets
     @static path /_next/static/*

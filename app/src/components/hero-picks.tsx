@@ -1,10 +1,7 @@
 import Image from "next/image";
 import Link from "next/link";
-import type { Post, AiAnalysis } from "@/lib/db/schema";
+import type { PostCardWithAnalysis } from "@/lib/db/card-types";
 import { TIER_LABELS, TIER_DOTS, type Tier, getVibeTagColor } from "@/lib/ai/llm";
-import { categoryToSlug } from "@/lib/categories";
-
-type PostWithAnalysis = Post & { analysis: AiAnalysis | null };
 
 function safeParseTier(value: string | null | undefined): Tier | null {
   if (!value) return null;
@@ -14,7 +11,12 @@ function safeParseTier(value: string | null | undefined): Tier | null {
 
 function safeParseJsonArray(json: string | null | undefined): string[] {
   if (!json) return [];
-  try { return JSON.parse(json); } catch { return []; }
+  try {
+    const parsed: unknown = JSON.parse(json);
+    return Array.isArray(parsed) ? parsed.filter((item): item is string => typeof item === "string") : [];
+  } catch {
+    return [];
+  }
 }
 
 function slugify(title: string): string {
@@ -31,7 +33,7 @@ const tierBadgeStyles: Record<string, string> = {
   banger: "bg-amber-500/90 text-white",
 };
 
-export function HeroPicks({ posts }: { posts: PostWithAnalysis[] }) {
+export function HeroPicks({ posts }: { posts: PostCardWithAnalysis[] }) {
   if (posts.length === 0) return null;
 
   const [featured, ...rest] = posts;
@@ -137,7 +139,7 @@ export function HeroPicks({ posts }: { posts: PostWithAnalysis[] }) {
   );
 }
 
-function SidePickCard({ post }: { post: PostWithAnalysis }) {
+function SidePickCard({ post }: { post: PostCardWithAnalysis }) {
   const title = post.title.replace(/^Show HN:\s*/i, "");
   const slug = slugify(post.title);
   const href = `/post/${post.id}/${slug}`;

@@ -14,7 +14,10 @@ import { eq } from "drizzle-orm";
 import { chromium, type Browser } from "playwright";
 import * as schema from "../src/lib/db/schema";
 import { analyzeBatch, analyzePost, buildBatches, tierToPickScore, type BatchPost, type AnalysisResult } from "../src/lib/ai/llm";
-import { fetchPageContent, parseGitHubRepo, fetchGitHubReadme, fetchGitHubMeta, loadScreenshot } from "../src/lib/fetchers";
+import { fetchPageContent, parseGitHubRepo, fetchGitHubReadme, fetchGitHubMeta } from "../src/lib/fetchers";
+import { installPublicNetworkGuard } from "../src/lib/browser-security";
+import { syncPostToFts } from "../src/lib/db/fts";
+import { loadScreenshot } from "./lib/screenshot-files";
 import {
   dequeueBatch,
   completeTask,
@@ -28,7 +31,7 @@ import sharp from "sharp";
 import dotenv from "dotenv";
 
 // Load env
-dotenv.config({ path: path.join(process.cwd(), ".env.local"), override: true });
+dotenv.config({ path: path.join(process.cwd(), ".env.local"), override: false });
 
 const DB_PATH =
   process.env.DATABASE_PATH || path.join(process.cwd(), "data", "showhn.db");
@@ -37,32 +40,20 @@ sqlite.pragma("journal_mode = WAL");
 sqlite.pragma("foreign_keys = ON");
 const db = drizzle(sqlite, { schema });
 
-// Ensure task_queue table exists
-sqlite.exec(`
-  CREATE TABLE IF NOT EXISTS task_queue (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    type TEXT NOT NULL,
-    post_id INTEGER NOT NULL REFERENCES posts(id),
-    status TEXT NOT NULL DEFAULT 'pending',
-    priority INTEGER DEFAULT 0,
-    attempts INTEGER DEFAULT 0,
-    max_attempts INTEGER DEFAULT 3,
-    created_at INTEGER NOT NULL,
-    started_at INTEGER,
-    completed_at INTEGER,
-    error TEXT
+// Fail clearly when deployment skipped schema setup. Runtime ALTER statements
+// hide migration drift and can leave partially upgraded databases.
+for (const [table, requiredColumns] of Object.entries({
+  posts: ["page_content", "readme_content", "github_stars", "github_updated_at"],
+  ai_analysis: ["pick_reason", "pick_score", "tier", "vibe_tags", "strengths", "weaknesses", "similar_to"],
+  task_queue: ["status", "attempts", "max_attempts", "started_at", "completed_at"],
+})) {
+  const existing = new Set(
+    (sqlite.prepare(`PRAGMA table_info(${table})`).all() as { name: string }[]).map((column) => column.name),
   );
-  CREATE INDEX IF NOT EXISTS idx_queue_status_priority ON task_queue(status, priority);
-  CREATE INDEX IF NOT EXISTS idx_queue_type ON task_queue(type);
-  CREATE INDEX IF NOT EXISTS idx_queue_post_id ON task_queue(post_id);
-`);
-
-// Migration: ensure columns exist
-for (const col of ["pick_reason TEXT", "pick_score INTEGER", "tier TEXT", "vibe_tags TEXT", "strengths TEXT", "weaknesses TEXT", "similar_to TEXT"]) {
-  try { sqlite.exec(`ALTER TABLE ai_analysis ADD COLUMN ${col}`); } catch { /* exists */ }
-}
-for (const col of ["github_stars INTEGER", "github_language TEXT", "github_description TEXT", "github_updated_at INTEGER"]) {
-  try { sqlite.exec(`ALTER TABLE posts ADD COLUMN ${col}`); } catch { /* exists */ }
+  const missing = requiredColumns.filter((column) => !existing.has(column));
+  if (missing.length > 0) {
+    throw new Error(`Database schema is missing ${table}.${missing.join(`, ${table}.`)}; run npm run db:migrate for a migrated database or drizzle-kit push for a legacy deployment`);
+  }
 }
 
 // Screenshot config
@@ -85,6 +76,41 @@ const STATS_INTERVAL = 60_000; // Log stats every 60s
 
 let running = true;
 let browser: Browser | null = null;
+let providerFailureStreak = 0;
+
+function errorMessage(error: unknown): string {
+  return (error instanceof Error ? error.message : String(error))
+    .replace(/\s+/g, " ")
+    .slice(0, 1000);
+}
+
+function errorStatus(error: unknown): number | undefined {
+  const value = (error as { status?: unknown } | null)?.status;
+  return typeof value === "number" ? value : undefined;
+}
+
+function isResponseFormatFailure(error: unknown): boolean {
+  // SDK HTTP errors are provider/configuration failures. Retrying each post
+  // cannot repair them, even when their message mentions JSON or parsing.
+  if (errorStatus(error) !== undefined) return false;
+  const message = errorMessage(error).toLowerCase();
+  return [
+    "json",
+    "parse",
+    "batch response",
+    "missing all post ids",
+    "no result returned",
+  ].some((marker) => message.includes(marker));
+}
+
+async function backoffAfterProviderFailure(error: unknown): Promise<void> {
+  providerFailureStreak++;
+  const status = errorStatus(error);
+  const baseMs = status === 401 || status === 403 ? 60_000 : 2_000;
+  const delayMs = Math.min(60_000, baseMs * 2 ** Math.min(providerFailureStreak - 1, 5));
+  console.error(`[worker] Provider unavailable; pausing ${delayMs}ms before retrying queued work`);
+  await new Promise((resolve) => setTimeout(resolve, delayMs));
+}
 
 // ─── Screenshot Helpers ──────────────────────────────────────────────────────
 
@@ -102,9 +128,7 @@ async function generateThumbnail(screenshotPath: string): Promise<void> {
 
 async function ensureBrowser(): Promise<Browser> {
   if (!browser || !browser.isConnected()) {
-    browser = await chromium.launch({
-      args: ["--no-sandbox", "--disable-setuid-sandbox"],
-    });
+    browser = await chromium.launch();
     console.log("[worker] Browser launched");
   }
   return browser;
@@ -119,9 +143,11 @@ async function takeScreenshot(
   const b = await ensureBrowser();
   const context = await b.newContext({
     viewport: VIEWPORT,
+    serviceWorkers: "block",
     userAgent:
       "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
   });
+  await installPublicNetworkGuard(context);
 
   try {
     const page = await context.newPage();
@@ -142,8 +168,11 @@ async function takeScreenshot(
       type: "png",
       clip: { x: 0, y: 0, width: VIEWPORT.width, height: VIEWPORT.height },
     });
-    await sharp(tmpPng).webp({ quality: 85 }).toFile(screenshotPath);
-    fs.unlinkSync(tmpPng);
+    try {
+      await sharp(tmpPng).webp({ quality: 85 }).toFile(screenshotPath);
+    } finally {
+      if (fs.existsSync(tmpPng)) fs.unlinkSync(tmpPng);
+    }
 
     await generateThumbnail(screenshotPath);
     return true;
@@ -269,9 +298,11 @@ async function fetchProcessContent(
   const b = await ensureBrowser();
   const context = await b.newContext({
     viewport: VIEWPORT,
+    serviceWorkers: "block",
     userAgent:
       "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
   });
+  await installPublicNetworkGuard(context);
 
   try {
     const page = await context.newPage();
@@ -437,6 +468,7 @@ function upsertAnalysis(postId: number, result: AnalysisResult, model: string): 
       },
     })
     .run();
+  syncPostToFts(sqlite, postId);
 }
 
 // ─── Main Worker Loop ────────────────────────────────────────────────────────
@@ -589,12 +621,13 @@ async function processBatch(tasks: schema.TaskQueue[]): Promise<void> {
   const subBatches = buildBatches(batchPosts);
   console.log(`  [batch] Sending ${batchPosts.length} post(s) to AI in ${subBatches.length} sub-batch(es): [${subBatches.map(b => b.length).join(",")}]`);
 
-  for (let si = 0; si < subBatches.length; si++) {
+  subBatchLoop: for (let si = 0; si < subBatches.length; si++) {
     const subBatch = subBatches[si];
     const subLabel = subBatches.length > 1 ? ` (sub ${si + 1}/${subBatches.length})` : "";
 
     try {
       const { results, model, usage } = await analyzeBatch(subBatch);
+      providerFailureStreak = 0;
 
       // Phase 3: Write results
       for (const [postId, result] of results) {
@@ -617,10 +650,26 @@ async function processBatch(tasks: schema.TaskQueue[]): Promise<void> {
       console.log(`  [batch]${subLabel} ${results.size}/${subBatch.length} posts, ${usage.durationMs}ms API`);
     } catch (err) {
       console.error(`  [batch] Sub-batch${subLabel} failed: ${(err as Error).message}`);
-      console.log(`  [batch] Falling back to individual analysis...`);
+
+      // Individual retries help malformed batch output, but amplify provider
+      // outages/rate limits into N extra requests. Requeue those as a unit.
+      if (!isResponseFormatFailure(err)) {
+        const message = errorMessage(err);
+        for (let remainingIndex = si; remainingIndex < subBatches.length; remainingIndex++) {
+          for (const post of subBatches[remainingIndex]) {
+            const task = taskMap.get(post.id)!;
+            failTask(db, task.id, message);
+          }
+        }
+        await backoffAfterProviderFailure(err);
+        break subBatchLoop;
+      }
+
+      console.log(`  [batch] Malformed batch output; falling back to individual analysis...`);
 
       // Fallback: process each post individually
-      for (const post of subBatch) {
+      for (let postIndex = 0; postIndex < subBatch.length; postIndex++) {
+        const post = subBatch[postIndex];
         const task = taskMap.get(post.id)!;
         try {
           const { result, model } = await analyzePost(
@@ -633,10 +682,26 @@ async function processBatch(tasks: schema.TaskQueue[]): Promise<void> {
           );
           upsertAnalysis(post.id, result, model);
           completeTask(db, task.id);
+          providerFailureStreak = 0;
           console.log(`  [batch] ✓ Post ${post.id} (fallback): [${result.tier}] ${post.title.slice(0, 50)}`);
         } catch (innerErr) {
-          failTask(db, task.id, (innerErr as Error).message);
-          console.error(`  [batch] ✗ Post ${post.id} (fallback): ${(innerErr as Error).message}`);
+          const message = errorMessage(innerErr);
+          failTask(db, task.id, message);
+          console.error(`  [batch] ✗ Post ${post.id} (fallback): ${message}`);
+
+          if (!isResponseFormatFailure(innerErr)) {
+            // Do not repeat a provider-wide failure for the rest of this batch.
+            for (const skipped of subBatch.slice(postIndex + 1)) {
+              failTask(db, taskMap.get(skipped.id)!.id, message);
+            }
+            for (let remainingIndex = si + 1; remainingIndex < subBatches.length; remainingIndex++) {
+              for (const skipped of subBatches[remainingIndex]) {
+                failTask(db, taskMap.get(skipped.id)!.id, message);
+              }
+            }
+            await backoffAfterProviderFailure(innerErr);
+            break subBatchLoop;
+          }
         }
       }
     }

@@ -2,9 +2,98 @@ import { db } from "./index";
 import { posts, aiAnalysis } from "./schema";
 import { desc, eq, gte, ne, and, inArray, sql } from "drizzle-orm";
 import type { Post, AiAnalysis } from "./schema";
+import type { PostCardWithAnalysis } from "./card-types";
+import type { SortOption, TimeRange } from "../post-filters";
 
-type TimeRange = "today" | "week" | "month" | "all";
-type SortOption = "newest" | "points" | "comments" | "interesting";
+const POST_CARD_SELECTION = {
+  post: {
+    id: posts.id,
+    title: posts.title,
+    url: posts.url,
+    author: posts.author,
+    points: posts.points,
+    comments: posts.comments,
+    createdAt: posts.createdAt,
+    // Cards only display a short text-post preview. Avoid shipping the full
+    // story/page/README corpus through the React server payload.
+    storyText: sql<string | null>`substr(${posts.storyText}, 1, 500)`,
+    hasScreenshot: posts.hasScreenshot,
+    githubStars: posts.githubStars,
+    githubLanguage: posts.githubLanguage,
+    githubDescription: posts.githubDescription,
+    status: posts.status,
+  },
+  analysis: {
+    postId: aiAnalysis.postId,
+    summary: aiAnalysis.summary,
+    category: aiAnalysis.category,
+    pickReason: aiAnalysis.pickReason,
+    pickScore: aiAnalysis.pickScore,
+    tier: aiAnalysis.tier,
+    vibeTags: aiAnalysis.vibeTags,
+  },
+};
+
+export const RAW_POST_CARD_COLUMNS = `
+  p.id, p.title, p.url, p.author, p.points, p.comments, p.created_at,
+  substr(p.story_text, 1, 500) AS story_text,
+  p.has_screenshot, p.github_stars, p.github_language,
+  p.github_description, p.status,
+  a.post_id AS a_post_id, a.summary AS a_summary,
+  a.category AS a_category, a.pick_reason AS a_pick_reason,
+  a.pick_score AS a_pick_score, a.tier AS a_tier,
+  a.vibe_tags AS a_vibe_tags
+`;
+
+export type RawPostCardRow = {
+  id: number;
+  title: string;
+  url: string | null;
+  author: string;
+  points: number | null;
+  comments: number | null;
+  created_at: number;
+  story_text: string | null;
+  has_screenshot: number | null;
+  github_stars: number | null;
+  github_language: string | null;
+  github_description: string | null;
+  status: string | null;
+  a_post_id: number | null;
+  a_summary: string | null;
+  a_category: string | null;
+  a_pick_reason: string | null;
+  a_pick_score: number | null;
+  a_tier: string | null;
+  a_vibe_tags: string | null;
+};
+
+export function mapRawPostCard(row: RawPostCardRow): PostCardWithAnalysis {
+  return {
+    id: row.id,
+    title: row.title,
+    url: row.url,
+    author: row.author,
+    points: row.points,
+    comments: row.comments,
+    createdAt: row.created_at,
+    storyText: row.story_text,
+    hasScreenshot: row.has_screenshot,
+    githubStars: row.github_stars,
+    githubLanguage: row.github_language,
+    githubDescription: row.github_description,
+    status: row.status,
+    analysis: row.a_post_id === null ? null : {
+      postId: row.a_post_id,
+      summary: row.a_summary,
+      category: row.a_category,
+      pickReason: row.a_pick_reason,
+      pickScore: row.a_pick_score,
+      tier: row.a_tier,
+      vibeTags: row.a_vibe_tags,
+    },
+  };
+}
 
 function getTimeFilter(range: TimeRange): number {
   const now = Math.floor(Date.now() / 1000);
@@ -17,6 +106,8 @@ function getTimeFilter(range: TimeRange): number {
       return now - 30 * 24 * 60 * 60;
     case "all":
       return 0;
+    default:
+      return now - 7 * 24 * 60 * 60;
   }
 }
 
@@ -26,13 +117,15 @@ export async function getPosts({
   categories = [],
   limit = 48,
   offset = 0,
+  includeTotal = true,
 }: {
   time?: TimeRange;
   sort?: SortOption;
   categories?: string[];
   limit?: number;
   offset?: number;
-} = {}): Promise<{ posts: (Post & { analysis: AiAnalysis | null })[]; total: number }> {
+  includeTotal?: boolean;
+} = {}): Promise<{ posts: PostCardWithAnalysis[]; total: number }> {
   const timeFilter = getTimeFilter(time);
 
   const conditions: ReturnType<typeof gte>[] = [gte(posts.createdAt, timeFilter), ne(posts.status, "dead")];
@@ -45,8 +138,8 @@ export async function getPosts({
   // Build query with left join (inner join when filtering by category)
   const joinType = categories.length > 0 ? "inner" : "left";
   const baseQuery = joinType === "inner"
-    ? db.select().from(posts).innerJoin(aiAnalysis, eq(posts.id, aiAnalysis.postId))
-    : db.select().from(posts).leftJoin(aiAnalysis, eq(posts.id, aiAnalysis.postId));
+    ? db.select(POST_CARD_SELECTION).from(posts).innerJoin(aiAnalysis, eq(posts.id, aiAnalysis.postId))
+    : db.select(POST_CARD_SELECTION).from(posts).leftJoin(aiAnalysis, eq(posts.id, aiAnalysis.postId));
 
   let query = baseQuery
     .where(and(...conditions))
@@ -72,16 +165,16 @@ export async function getPosts({
   const results = query.all();
 
   // Get total count (without limit/offset) for the same filters
-  const countQuery = joinType === "inner"
-    ? db.select({ count: sql<number>`count(*)` }).from(posts).innerJoin(aiAnalysis, eq(posts.id, aiAnalysis.postId)).where(and(...conditions))
-    : db.select({ count: sql<number>`count(*)` }).from(posts).leftJoin(aiAnalysis, eq(posts.id, aiAnalysis.postId)).where(and(...conditions));
-  const total = countQuery.get()?.count ?? 0;
+  let total = 0;
+  if (includeTotal) {
+    const countQuery = joinType === "inner"
+      ? db.select({ count: sql<number>`count(*)` }).from(posts).innerJoin(aiAnalysis, eq(posts.id, aiAnalysis.postId)).where(and(...conditions))
+      : db.select({ count: sql<number>`count(*)` }).from(posts).leftJoin(aiAnalysis, eq(posts.id, aiAnalysis.postId)).where(and(...conditions));
+    total = countQuery.get()?.count ?? 0;
+  }
 
   return {
-    posts: results.map((r) => ({
-      ...r.posts,
-      analysis: r.ai_analysis,
-    })),
+    posts: results.map((r) => ({ ...r.post, analysis: r.analysis })),
     total,
   };
 }
@@ -99,8 +192,10 @@ export async function getCategories(): Promise<string[]> {
 export async function searchPosts(
   query: string,
   limit = 48
-): Promise<(Post & { analysis: AiAnalysis | null })[]> {
-  if (!query.trim()) return [];
+): Promise<PostCardWithAnalysis[]> {
+  const normalizedQuery = query.trim().slice(0, 200);
+  if (!normalizedQuery) return [];
+  const safeLimit = Number.isFinite(limit) ? Math.max(1, Math.min(Math.floor(limit), 100)) : 48;
 
   // FTS5 search — use raw SQL since Drizzle doesn't support virtual tables
   const { sqlite } = await import("./index");
@@ -108,21 +203,13 @@ export async function searchPosts(
   // Sanitize FTS5 query: wrap in double quotes to treat as a phrase and
   // prevent FTS5 syntax operators (*, OR, NOT, NEAR, column filters) from
   // causing parse errors. Escape any internal double quotes.
-  const sanitized = '"' + query.replace(/"/g, '""') + '"';
+  const sanitized = '"' + normalizedQuery.replace(/"/g, '""') + '"';
 
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- raw SQL rows from better-sqlite3
-  let rows: any[];
+  let rows: RawPostCardRow[];
   try {
     rows = sqlite
       .prepare(
-        `SELECT p.*, a.post_id as a_post_id, a.summary as a_summary, a.category as a_category,
-                a.tech_stack as a_tech_stack, a.target_audience as a_target_audience,
-                a.tags as a_tags, a.pick_reason as a_pick_reason,
-                a.pick_score as a_pick_score,
-                a.tier as a_tier, a.vibe_tags as a_vibe_tags,
-                a.strengths as a_strengths, a.weaknesses as a_weaknesses,
-                a.similar_to as a_similar_to,
-                a.analyzed_at as a_analyzed_at, a.model as a_model
+        `SELECT ${RAW_POST_CARD_COLUMNS}
          FROM posts_fts fts
          JOIN posts p ON p.id = fts.rowid
          LEFT JOIN ai_analysis a ON p.id = a.post_id
@@ -130,53 +217,13 @@ export async function searchPosts(
          ORDER BY rank
          LIMIT ?`
       )
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      .all(sanitized, limit) as any[];
+      .all(sanitized, safeLimit) as RawPostCardRow[];
   } catch {
     // FTS5 parse error — return empty results rather than 500
     return [];
   }
 
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  return rows.map((r: any) => ({
-    id: r.id,
-    title: r.title,
-    url: r.url,
-    author: r.author,
-    points: r.points,
-    comments: r.comments,
-    createdAt: r.created_at,
-    storyText: r.story_text,
-    hasScreenshot: r.has_screenshot,
-    pageContent: r.page_content,
-    readmeContent: r.readme_content,
-    githubStars: r.github_stars,
-    githubLanguage: r.github_language,
-    githubDescription: r.github_description,
-    githubUpdatedAt: r.github_updated_at,
-    status: r.status,
-    fetchedAt: r.fetched_at,
-    updatedAt: r.updated_at,
-    analysis: r.a_post_id
-      ? {
-          postId: r.a_post_id,
-          summary: r.a_summary,
-          category: r.a_category,
-          techStack: r.a_tech_stack,
-          targetAudience: r.a_target_audience,
-          tags: r.a_tags,
-          pickReason: r.a_pick_reason,
-          pickScore: r.a_pick_score,
-          tier: r.a_tier,
-          vibeTags: r.a_vibe_tags,
-          strengths: r.a_strengths,
-          weaknesses: r.a_weaknesses,
-          similarTo: r.a_similar_to,
-          analyzedAt: r.a_analyzed_at,
-          model: r.a_model,
-        }
-      : null,
-  }));
+  return rows.map(mapRawPostCard);
 }
 
 export async function getDigest(date?: string): Promise<{
@@ -309,26 +356,18 @@ export async function getRelatedPosts(
   title: string,
   summary: string,
   limit = 6,
-): Promise<(Post & { analysis: AiAnalysis | null })[]> {
+): Promise<PostCardWithAnalysis[]> {
   if (!title && !summary) return [];
 
   const { sqlite } = await import("./index");
   const query = extractSearchTerms(title, summary);
   if (!query) return [];
 
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  let rows: any[];
+  let rows: RawPostCardRow[];
   try {
     rows = sqlite
       .prepare(
-        `SELECT p.*, a.post_id as a_post_id, a.summary as a_summary, a.category as a_category,
-                a.tech_stack as a_tech_stack, a.target_audience as a_target_audience,
-                a.tags as a_tags, a.pick_reason as a_pick_reason,
-                a.pick_score as a_pick_score,
-                a.tier as a_tier, a.vibe_tags as a_vibe_tags,
-                a.strengths as a_strengths, a.weaknesses as a_weaknesses,
-                a.similar_to as a_similar_to,
-                a.analyzed_at as a_analyzed_at, a.model as a_model
+        `SELECT ${RAW_POST_CARD_COLUMNS}
          FROM posts_fts fts
          JOIN posts p ON p.id = fts.rowid
          LEFT JOIN ai_analysis a ON p.id = a.post_id
@@ -336,52 +375,12 @@ export async function getRelatedPosts(
          ORDER BY rank
          LIMIT ?`
       )
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      .all(query, postId, limit) as any[];
+      .all(query, postId, limit) as RawPostCardRow[];
   } catch {
     return [];
   }
 
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  return rows.map((r: any) => ({
-    id: r.id,
-    title: r.title,
-    url: r.url,
-    author: r.author,
-    points: r.points,
-    comments: r.comments,
-    createdAt: r.created_at,
-    storyText: r.story_text,
-    hasScreenshot: r.has_screenshot,
-    pageContent: r.page_content,
-    readmeContent: r.readme_content,
-    githubStars: r.github_stars,
-    githubLanguage: r.github_language,
-    githubDescription: r.github_description,
-    githubUpdatedAt: r.github_updated_at,
-    status: r.status,
-    fetchedAt: r.fetched_at,
-    updatedAt: r.updated_at,
-    analysis: r.a_post_id
-      ? {
-          postId: r.a_post_id,
-          summary: r.a_summary,
-          category: r.a_category,
-          techStack: r.a_tech_stack,
-          targetAudience: r.a_target_audience,
-          tags: r.a_tags,
-          pickReason: r.a_pick_reason,
-          pickScore: r.a_pick_score,
-          tier: r.a_tier,
-          vibeTags: r.a_vibe_tags,
-          strengths: r.a_strengths,
-          weaknesses: r.a_weaknesses,
-          similarTo: r.a_similar_to,
-          analyzedAt: r.a_analyzed_at,
-          model: r.a_model,
-        }
-      : null,
-  }));
+  return rows.map(mapRawPostCard);
 }
 
 /**
@@ -390,13 +389,13 @@ export async function getRelatedPosts(
  */
 export async function getFeaturedPosts(
   limit = 3,
-): Promise<(Post & { analysis: AiAnalysis | null })[]> {
+): Promise<PostCardWithAnalysis[]> {
   const weekAgo = Math.floor(Date.now() / 1000) - 7 * 24 * 60 * 60;
 
   // Sort by points within top tiers — the hero should showcase the most
   // popular gems/bangers, not just any gem over a high-point banger.
   let results = db
-    .select()
+    .select(POST_CARD_SELECTION)
     .from(posts)
     .innerJoin(aiAnalysis, eq(posts.id, aiAnalysis.postId))
     .where(and(
@@ -412,7 +411,7 @@ export async function getFeaturedPosts(
   if (results.length < limit) {
     const monthAgo = Math.floor(Date.now() / 1000) - 30 * 24 * 60 * 60;
     results = db
-      .select()
+      .select(POST_CARD_SELECTION)
       .from(posts)
       .innerJoin(aiAnalysis, eq(posts.id, aiAnalysis.postId))
       .where(and(
@@ -426,8 +425,8 @@ export async function getFeaturedPosts(
   }
 
   return results.map((r) => ({
-    ...r.posts,
-    analysis: r.ai_analysis,
+    ...r.post,
+    analysis: r.analysis,
   }));
 }
 

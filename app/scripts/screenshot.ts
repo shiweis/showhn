@@ -12,6 +12,11 @@ import { chromium, type Browser } from "playwright";
 import * as schema from "../src/lib/db/schema";
 import path from "path";
 import fs from "fs";
+import sharp from "sharp";
+import { installPublicNetworkGuard } from "../src/lib/browser-security";
+import dotenv from "dotenv";
+
+dotenv.config({ path: path.join(process.cwd(), ".env.local"), override: false });
 
 const DB_PATH = process.env.DATABASE_PATH || path.join(process.cwd(), "data", "showhn.db");
 const sqlite = new Database(DB_PATH);
@@ -40,9 +45,11 @@ async function takeScreenshot(
 
   const context = await browser.newContext({
     viewport: VIEWPORT,
+    serviceWorkers: "block",
     userAgent:
       "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
   });
+  await installPublicNetworkGuard(context);
 
   try {
     const page = await context.newPage();
@@ -51,11 +58,17 @@ async function takeScreenshot(
     // (GitHub/SPAs keep connections open that prevent networkidle from firing)
     await page.waitForTimeout(2000);
 
+    const temporaryPath = `${screenshotPath}.tmp.png`;
     await page.screenshot({
-      path: screenshotPath,
+      path: temporaryPath,
       type: "png",
       clip: { x: 0, y: 0, width: VIEWPORT.width, height: VIEWPORT.height },
     });
+    try {
+      await sharp(temporaryPath).webp({ quality: 85 }).toFile(screenshotPath);
+    } finally {
+      if (fs.existsSync(temporaryPath)) fs.unlinkSync(temporaryPath);
+    }
 
     return true;
   } catch (err) {
@@ -119,9 +132,7 @@ async function run() {
   console.log(`[screenshot] ${pending.length} posts need screenshots`);
   if (pending.length === 0) return;
 
-  const browser = await chromium.launch({
-    args: ["--no-sandbox", "--disable-setuid-sandbox"],
-  });
+  const browser = await chromium.launch();
 
   // Process in batches of CONCURRENCY
   for (let i = 0; i < pending.length; i += CONCURRENCY) {

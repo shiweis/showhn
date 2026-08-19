@@ -28,7 +28,7 @@ export default async function SearchPage({
   searchParams: Promise<{ [key: string]: string | undefined }>;
 }) {
   const params = await searchParams;
-  const query = params.q || "";
+  const query = (params.q || "").trim().slice(0, 200);
   const [results, categories] = await Promise.all([
     query ? searchPosts(query) : Promise.resolve([]),
     !query ? getCategories() : Promise.resolve([]),

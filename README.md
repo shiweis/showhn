@@ -8,7 +8,7 @@ An AI-powered visual gallery for [Show HN](https://news.ycombinator.com/showhn.h
 
 - **Visual gallery** — Automated screenshots of every Show HN project
 - **GitHub-aware** — GitHub repos get metadata cards (stars, language, description) instead of generic screenshots, with on-demand refresh via the GitHub API
-- **AI analysis** — Each project gets a tier (gem/banger/solid/mid/pass), vibe tags, highlight, and strengths/weaknesses via LLM. Benchmark-calibrated against 15 real posts for consistent grading. Batched (5 posts/call) with Anthropic prompt caching for cost efficiency
+- **AI analysis** — Each project gets a tier (gem/banger/solid/mid/pass), vibe tags, highlight, and strengths/weaknesses via LLM. Benchmark-calibrated against real posts, batched (up to 5 posts/call), and records provider-reported cache usage and billed cost
 - **Similar projects** — FTS5-powered related project recommendations on every post page, using corpus-analyzed stopwords for relevance
 - **Full-text search** — SQLite FTS5 search across titles and AI summaries
 - **Daily digest** — Curated view of each day's best projects
@@ -32,7 +32,7 @@ An AI-powered visual gallery for [Show HN](https://news.ycombinator.com/showhn.h
 
 - Node.js 20+
 - A Chromium-compatible environment (for screenshots)
-- An OpenAI or Anthropic API key (for AI analysis)
+- An OpenRouter API key for the default MiniMax configuration, or an OpenAI/Anthropic key for another provider
 
 ### Setup
 
@@ -44,8 +44,8 @@ npm install
 cp .env.example .env.local
 # Edit .env.local with your API keys
 
-# Run database migrations
-npx drizzle-kit push
+# Run versioned database migrations
+npm run db:migrate
 
 # Ingest Show HN posts from Algolia
 npx tsx scripts/ingest.ts --backfill
@@ -77,6 +77,7 @@ The app runs on port 3000 by default. Override with `PORT=3333 npm run dev`.
 | `scripts/backfill-content-playwright.ts` | Playwright-based backfill for JS-rendered sites. |
 | `scripts/backfill-thumbnails.ts` | Generate thumbnail images from full screenshots. |
 | `scripts/setup-fts.ts` | Rebuild the FTS5 search index. Run after ingestion. |
+| `scripts/baseline-migrations.ts` | Adopt migration tracking for a pre-migration database after making a backup. Requires `--yes`. |
 | `scripts/analytics.sh` | Pull Umami analytics from CLI. Usage: `./scripts/analytics.sh [site] [period]`. Sites: `all`, `hn`, `shiwei`, `everglades`, `burin`. Periods: `today`, `24h`, `7d`, `30d`. |
 | `scripts/analyze-stopwords.sh` | Corpus analysis for FTS stopwords. Finds terms appearing in 15+ of 16 categories. Run every few months to update the stopword list in `queries.ts` as the corpus grows. |
 
@@ -87,14 +88,24 @@ See [`.env.example`](app/.env.example) for all available options:
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `DATABASE_PATH` | `./data/showhn.db` | Path to SQLite database |
-| `ANALYSIS_PROVIDER` | `anthropic` | LLM provider (`openai`, `anthropic`, or `openrouter`) |
-| `ANALYSIS_MODEL` | `claude-haiku-4-5-20251001` | Model name for analysis |
+| `ANALYSIS_PROVIDER` | `openrouter` | LLM provider (`openai`, `anthropic`, or `openrouter`) |
+| `ANALYSIS_MODEL` | `minimax/minimax-m3` | Model name for analysis |
 | `OPENAI_API_KEY` | — | OpenAI API key |
 | `ANTHROPIC_API_KEY` | — | Anthropic API key |
 | `OPENROUTER_API_KEY` | — | OpenRouter API key (when using `openrouter` provider) |
 | `SCREENSHOT_CONCURRENCY` | `4` | Parallel browser instances |
 | `SCREENSHOT_TIMEOUT` | `15000` | Screenshot timeout in ms |
 | `GITHUB_TOKEN` | — | GitHub API token (optional, raises rate limit from 60 to 5000 req/hr) |
+
+### Existing databases
+
+Databases created before versioned migrations already have the current schema but no migration log. Back up the database, then run `npm run db:baseline -- --yes` once. Fresh databases should use `npm run db:migrate` normally.
+
+### Quality checks
+
+Run `npm run check` before deployment. It covers ESLint, application and worker script type checking, and the automated security/queue/AI tests. `npm audit` should also report zero known vulnerabilities.
+
+HTML routes render dynamically because the strict Content Security Policy uses a fresh script nonce on every response. SQLite queries remain local and static assets keep their normal long-lived caching.
 
 ## Production Deployment
 
@@ -104,7 +115,7 @@ npm run build
 PORT=3333 npm start
 ```
 
-Uses PM2 for process management and Traefik (via Dokploy) as reverse proxy behind Cloudflare. See [`OPS.md`](OPS.md) for the full operations runbook and [`deploy/`](deploy/) for configs.
+Uses the path-portable root [`ecosystem.config.js`](ecosystem.config.js) for PM2. The compatibility file under [`deploy/`](deploy/) re-exports that canonical configuration. Production should run the screenshot worker as an unprivileged user and deny private/link-local destinations at the worker network boundary in addition to the application URL guard.
 
 ## Project Structure
 

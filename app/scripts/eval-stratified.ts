@@ -29,9 +29,9 @@ import {
   type BatchPost,
   type UsageStats,
 } from "../src/lib/ai/llm";
-import { loadScreenshot } from "../src/lib/fetchers";
+import { loadScreenshot } from "./lib/screenshot-files";
 
-dotenv.config({ path: path.join(process.cwd(), ".env.local"), override: true });
+dotenv.config({ path: path.join(process.cwd(), ".env.local"), override: false });
 
 // ─── Args ──────────────────────────────────────────────────────────────────
 type ModelSpec = { provider: string; model: string; raw: string };

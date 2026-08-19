@@ -3,8 +3,7 @@ import { PostGrid } from "@/components/post-grid";
 import { FilterBar } from "@/components/filter-bar";
 import { HeroPicks } from "@/components/hero-picks";
 import { getPosts, getCategories, getFeaturedPosts } from "@/lib/db/queries";
-
-export const revalidate = 1200; // refresh every 20 min — stays fresh between 30-min ingest crons
+import { normalizeCategories, normalizeSort, normalizeTime } from "@/lib/post-filters";
 
 export default async function Home({
   searchParams,
@@ -12,22 +11,9 @@ export default async function Home({
   searchParams: Promise<{ [key: string]: string | string[] | undefined }>;
 }) {
   const params = await searchParams;
-  const time = (typeof params.t === "string" ? params.t : "week") as
-    | "today"
-    | "week"
-    | "month"
-    | "all";
-  const sort = (typeof params.sort === "string" ? params.sort : "newest") as
-    | "newest"
-    | "points"
-    | "comments"
-    | "interesting";
-  const catParam = params.cat;
-  const categories = Array.isArray(catParam)
-    ? catParam
-    : catParam
-    ? [catParam]
-    : [];
+  const time = normalizeTime(params.t);
+  const sort = normalizeSort(params.sort);
+  const categories = normalizeCategories(params.cat);
 
   // Show hero on default view only (no filters, default time+sort)
   const isDefaultView = categories.length === 0 && time === "week" && sort === "newest";
