@@ -58,7 +58,7 @@ export function HeroPicks({ posts }: { posts: PostCardWithAnalysis[] }) {
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
         {/* Featured (large) card */}
         <div className="lg:col-span-2 relative group">
-          <Link href={featuredHref}>
+          <Link href={featuredHref} prefetch={false}>
             <article className="rounded-lg border border-border bg-card overflow-hidden shadow-sm hover:shadow-lg hover:border-primary/20 hover:-translate-y-0.5 transition-all duration-200 h-full">
               <div className="flex flex-col sm:flex-row h-full">
                 {/* Image */}
@@ -147,7 +147,7 @@ function SidePickCard({ post }: { post: PostCardWithAnalysis }) {
   const tags = safeParseJsonArray(post.analysis?.vibeTags);
 
   return (
-    <Link href={href} className="group block flex-1">
+    <Link href={href} prefetch={false} className="group block flex-1">
       <article className="rounded-lg border border-border bg-card overflow-hidden shadow-sm hover:shadow-lg hover:border-primary/20 hover:-translate-y-0.5 transition-all duration-200 p-4 h-full flex flex-col justify-center">
         <div className="flex items-center gap-2 mb-1.5 flex-wrap">
           {tier && (

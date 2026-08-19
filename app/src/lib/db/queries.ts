@@ -363,24 +363,55 @@ export async function getRelatedPosts(
   const query = extractSearchTerms(title, summary);
   if (!query) return [];
 
-  let rows: RawPostCardRow[];
+  const safeLimit = Number.isFinite(limit)
+    ? Math.max(1, Math.min(Math.floor(limit), 24))
+    : 6;
+
   try {
-    rows = sqlite
+    const matchCount = sqlite
+      .prepare("SELECT count(*) AS count FROM posts_fts WHERE posts_fts MATCH ?")
+      .get(query) as { count: number };
+    if (matchCount.count === 0) return [];
+
+    // Joining directly against FTS before ORDER BY rank prevents SQLite's FTS
+    // top-N optimization. A broad OR query then spends seconds ranking every
+    // joined row. Materialize a small ranked candidate set first, filter it,
+    // and expand only when inactive posts leave too few results. This preserves
+    // the exact top active matches while keeping the common path in milliseconds.
+    const statement = sqlite
       .prepare(
-        `SELECT ${RAW_POST_CARD_COLUMNS}
-         FROM posts_fts fts
-         JOIN posts p ON p.id = fts.rowid
+        `WITH matches AS MATERIALIZED (
+           SELECT rowid, rank AS fts_rank
+           FROM posts_fts
+           WHERE posts_fts MATCH ?
+           ORDER BY rank
+           LIMIT ?
+         )
+         SELECT ${RAW_POST_CARD_COLUMNS}
+         FROM matches m
+         JOIN posts p ON p.id = m.rowid
          LEFT JOIN ai_analysis a ON p.id = a.post_id
-         WHERE posts_fts MATCH ? AND p.id != ? AND p.status = 'active'
-         ORDER BY rank
+         WHERE p.id != ? AND p.status = 'active'
+         ORDER BY m.fts_rank
          LIMIT ?`
-      )
-      .all(query, postId, limit) as RawPostCardRow[];
+      );
+
+    let candidateLimit = Math.min(matchCount.count, Math.max(100, safeLimit * 16));
+    while (true) {
+      const rows = statement.all(
+        query,
+        candidateLimit,
+        postId,
+        safeLimit,
+      ) as RawPostCardRow[];
+      if (rows.length >= safeLimit || candidateLimit >= matchCount.count) {
+        return rows.map(mapRawPostCard);
+      }
+      candidateLimit = Math.min(matchCount.count, candidateLimit * 2);
+    }
   } catch {
     return [];
   }
-
-  return rows.map(mapRawPostCard);
 }
 
 /**

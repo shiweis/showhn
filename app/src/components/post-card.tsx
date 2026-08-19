@@ -206,7 +206,7 @@ export function PostCard({
         {/* Content */}
         <div className="p-3">
           <h3 className="font-bold text-[0.935rem] leading-snug line-clamp-2 min-h-[2.6rem] mb-1.5 group-hover:text-primary transition-colors tracking-[-0.01em]">
-            <Link href={href} className="after:absolute after:inset-0">
+            <Link href={href} prefetch={false} className="after:absolute after:inset-0">
               {displayTitle}
             </Link>
           </h3>
