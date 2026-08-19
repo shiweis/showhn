@@ -9,6 +9,7 @@
 import OpenAI from "openai";
 import Anthropic from "@anthropic-ai/sdk";
 import { buildBenchmarkContext } from "./benchmark";
+import { getJudgePromptAppendix } from "./judge-prompts";
 
 export const TIERS = ["gem", "banger", "solid", "mid", "pass"] as const;
 export type Tier = (typeof TIERS)[number];
@@ -99,6 +100,13 @@ export type UsageStats = {
   cacheReadTokens: number;   // Anthropic prompt cache hits (0 for OpenAI)
   cacheCreateTokens: number; // Anthropic prompt cache writes (0 for OpenAI)
   durationMs: number;
+  /** OpenRouter endpoint that actually served the request, when reported. */
+  providerName?: string;
+  /** Billed request cost reported by OpenRouter, when available. */
+  billedCostUsd?: number;
+  reasoningTokens?: number;
+  finishReason?: string;
+  nativeFinishReason?: string;
 };
 
 type ProviderResponse = {
@@ -127,7 +135,7 @@ const CATEGORIES = [
 
 /** Static system prompt — includes benchmark calibration. Cached by Anthropic.
  *  excludeBenchmarkIds: leave-one-out support for eval — omit these posts from calibration. */
-function buildSystemPrompt(excludeBenchmarkIds?: number[]): string {
+function buildSystemPrompt(excludeBenchmarkIds?: number[], promptAppendix?: string): string {
   const benchmark = buildBenchmarkContext(excludeBenchmarkIds);
   return `You're a sharp, opinionated tech writer reviewing Show HN projects. Analyze the project provided and return a JSON object.
 
@@ -345,7 +353,32 @@ SIMILAR_TO — name real, specific products. Not categories.
 
 Be concise. Return ONLY valid JSON, no markdown fencing.
 
-${benchmark}`;
+${benchmark}${promptAppendix ? `\n\n${promptAppendix.trim()}` : ""}`;
+}
+
+function optionalBooleanEnv(name: string): boolean | undefined {
+  const raw = process.env[name]?.trim().toLowerCase();
+  if (!raw) return undefined;
+  if (["1", "true", "yes", "on"].includes(raw)) return true;
+  if (["0", "false", "no", "off"].includes(raw)) return false;
+  throw new Error(`${name} must be true or false`);
+}
+
+function optionalNumberEnv(name: string): number | undefined {
+  const raw = process.env[name]?.trim();
+  if (!raw) return undefined;
+  const value = Number(raw);
+  if (!Number.isFinite(value)) throw new Error(`${name} must be a number`);
+  return value;
+}
+
+function optionalReasoningEffortEnv(): "none" | "minimal" | "low" | "medium" | "high" | undefined {
+  const value = process.env.ANALYSIS_REASONING_EFFORT?.trim();
+  if (!value) return undefined;
+  if (!["none", "minimal", "low", "medium", "high"].includes(value)) {
+    throw new Error("ANALYSIS_REASONING_EFFORT must be none, minimal, low, medium, or high");
+  }
+  return value as "none" | "minimal" | "low" | "medium" | "high";
 }
 
 
@@ -428,6 +461,10 @@ async function callOpenRouter(
   model: string,
   routerProviderOverride?: string,
   allowFallbacks?: boolean,
+  requireParameters?: boolean,
+  reasoningEffort?: "none" | "minimal" | "low" | "medium" | "high",
+  responseSchema?: Record<string, unknown>,
+  temperature?: number,
 ): Promise<ProviderResponse> {
   const client = new OpenAI({
     apiKey: process.env.OPENROUTER_API_KEY,
@@ -438,9 +475,24 @@ async function callOpenRouter(
   // Provider routing: pin for production stability (Qwen on Alibaba). Eval can
   // override per-call when comparing models that aren't on the same provider.
   const pinnedProvider = routerProviderOverride ?? process.env.OPENROUTER_PROVIDER ?? "alibaba";
-  const providerCfg = pinnedProvider === "auto"
+  const providerCfg = pinnedProvider === "auto" && !requireParameters
     ? undefined
-    : { order: [pinnedProvider], allow_fallbacks: !!allowFallbacks };
+    : {
+        ...(pinnedProvider === "auto" ? {} : { order: [pinnedProvider] }),
+        allow_fallbacks: !!allowFallbacks,
+        ...(requireParameters ? { require_parameters: true } : {}),
+      };
+
+  const responseFormat = responseSchema
+    ? {
+        type: "json_schema" as const,
+        json_schema: {
+          name: "show_hn_analysis",
+          strict: true,
+          schema: responseSchema,
+        },
+      }
+    : { type: "json_object" as const };
 
   const response = await client.chat.completions.create({
     model,
@@ -448,10 +500,17 @@ async function callOpenRouter(
       { role: "system", content: systemPrompt },
       { role: "user", content },
     ],
-    max_completion_tokens: 8000,
+    // OpenRouter exposes this as max_tokens across providers. Using
+    // max_completion_tokens prevents require_parameters routing from matching
+    // otherwise compatible open-model endpoints.
+    max_tokens: 8000,
+    ...(temperature !== undefined ? { temperature } : {}),
     // Force JSON-only output. Some models (Qwen 3.6 series) drop the leading `{`
     // without this. OpenRouter forwards response_format to providers that support it.
-    response_format: { type: "json_object" },
+    response_format: responseFormat,
+    ...((reasoningEffort
+      ? { reasoning: { effort: reasoningEffort, exclude: true } }
+      : {}) as Record<string, unknown>),
     // OpenRouter-specific provider routing (not in OpenAI types)
     ...((providerCfg ? { provider: providerCfg } : {}) as Record<string, unknown>),
   });
@@ -462,7 +521,14 @@ async function callOpenRouter(
   const u = response.usage as unknown as {
     prompt_tokens?: number;
     completion_tokens?: number;
+    cost?: number;
     prompt_tokens_details?: { cached_tokens?: number; cache_write_tokens?: number };
+    completion_tokens_details?: { reasoning_tokens?: number };
+  } | undefined;
+  const providerName = (response as unknown as { provider?: string }).provider;
+  const choice = response.choices[0] as unknown as {
+    finish_reason?: string;
+    native_finish_reason?: string;
   } | undefined;
 
   return {
@@ -473,7 +539,85 @@ async function callOpenRouter(
       cacheReadTokens: u?.prompt_tokens_details?.cached_tokens ?? 0,
       cacheCreateTokens: u?.prompt_tokens_details?.cache_write_tokens ?? 0,
       durationMs: Date.now() - start,
+      providerName,
+      billedCostUsd: u?.cost,
+      reasoningTokens: u?.completion_tokens_details?.reasoning_tokens,
+      finishReason: choice?.finish_reason,
+      nativeFinishReason: choice?.native_finish_reason,
     },
+  };
+}
+
+function analysisJsonSchema(singlePost: boolean): Record<string, unknown> {
+  const resultProperties = {
+    summary: { type: "string" },
+    category: { type: "string", enum: CATEGORIES },
+    target_audience: { type: "string" },
+    tier: { type: "string", enum: TIERS },
+    vibe_tags: {
+      type: "array",
+      items: { type: "string", enum: VIBE_TAGS },
+      minItems: 1,
+      maxItems: 3,
+    },
+    highlight: { type: "string" },
+    strengths: {
+      type: "array",
+      items: { type: "string" },
+      minItems: 1,
+      maxItems: 3,
+    },
+    weaknesses: {
+      type: "array",
+      items: { type: "string" },
+      minItems: 1,
+      maxItems: 2,
+    },
+    similar_to: {
+      type: "array",
+      items: { type: "string" },
+      maxItems: 3,
+    },
+  };
+  const required = [
+    "summary",
+    "category",
+    "target_audience",
+    "tier",
+    "vibe_tags",
+    "highlight",
+    "strengths",
+    "weaknesses",
+    "similar_to",
+  ];
+
+  if (singlePost) {
+    return {
+      type: "object",
+      properties: resultProperties,
+      required,
+      additionalProperties: false,
+    };
+  }
+
+  return {
+    type: "object",
+    properties: {
+      results: {
+        type: "array",
+        items: {
+          type: "object",
+          properties: {
+            post_id: { type: "integer" },
+            ...resultProperties,
+          },
+          required: ["post_id", ...required],
+          additionalProperties: false,
+        },
+      },
+    },
+    required: ["results"],
+    additionalProperties: false,
   };
 }
 
@@ -664,13 +808,38 @@ export async function analyzeBatch(
     providerOverride?: string;
     routerProviderOverride?: string;
     allowRouterFallbacks?: boolean;
+    /** Optional eval-only/model-specific guidance appended to the base rubric. */
+    promptAppendix?: string;
+    /** Only route to OpenRouter endpoints supporting every requested parameter. */
+    routerRequireParameters?: boolean;
+    /** Control OpenRouter reasoning; useful for compact classification calls. */
+    routerReasoningEffort?: "none" | "minimal" | "low" | "medium" | "high";
+    /** Enforce the full analysis object with JSON Schema instead of JSON mode. */
+    structuredOutput?: boolean;
+    /** Optional OpenRouter sampling temperature. */
+    routerTemperature?: number;
   } = {}
 ): Promise<{ results: Map<number, AnalysisResult>; model: string; usage: UsageStats }> {
   if (posts.length === 0) throw new Error("analyzeBatch: empty batch");
 
   const provider = options.providerOverride || process.env.ANALYSIS_PROVIDER || "openai";
   const model = options.modelOverride || process.env.ANALYSIS_MODEL || "gpt-5-mini";
-  const systemPrompt = buildSystemPrompt(options.excludeBenchmarkIds);
+  const promptAppendix =
+    options.promptAppendix ?? getJudgePromptAppendix(process.env.ANALYSIS_PROMPT_VARIANT);
+  const routerAllowFallbacks =
+    options.allowRouterFallbacks ?? optionalBooleanEnv("ANALYSIS_ROUTER_ALLOW_FALLBACKS");
+  const routerRequireParameters =
+    options.routerRequireParameters ?? optionalBooleanEnv("ANALYSIS_ROUTER_REQUIRE_PARAMETERS");
+  const routerReasoningEffort =
+    options.routerReasoningEffort ?? optionalReasoningEffortEnv();
+  const routerTemperature =
+    options.routerTemperature ?? optionalNumberEnv("ANALYSIS_TEMPERATURE");
+  if (routerTemperature !== undefined && (routerTemperature < 0 || routerTemperature > 2)) {
+    throw new Error("ANALYSIS_TEMPERATURE must be between 0 and 2");
+  }
+  const structuredOutput =
+    options.structuredOutput ?? optionalBooleanEnv("ANALYSIS_STRUCTURED_OUTPUT") ?? false;
+  const systemPrompt = buildSystemPrompt(options.excludeBenchmarkIds, promptAppendix);
 
   // Build content array with per-post data
   // (Benchmark calibration is in the system prompt, cached by Anthropic)
@@ -740,7 +909,11 @@ export async function analyzeBatch(
       openaiContent,
       model,
       options.routerProviderOverride,
-      options.allowRouterFallbacks,
+      routerAllowFallbacks,
+      routerRequireParameters,
+      routerReasoningEffort,
+      structuredOutput ? analysisJsonSchema(posts.length === 1) : undefined,
+      routerTemperature,
     );
   } else {
     resp = await callOpenAI(systemPrompt, openaiContent, model);
@@ -753,7 +926,11 @@ export async function analyzeBatch(
     : usage.cacheCreateTokens > 0
       ? ` cache_write=${usage.cacheCreateTokens}`
       : "";
-  console.log(`[llm] API response: ${usage.inputTokens} in + ${usage.outputTokens} out tokens,${cacheInfo} ${usage.durationMs}ms`);
+  const routeInfo = usage.providerName ? ` provider=${usage.providerName}` : "";
+  const costInfo = usage.billedCostUsd !== undefined ? ` cost=$${usage.billedCostUsd.toFixed(6)}` : "";
+  const reasoningInfo = usage.reasoningTokens ? ` reasoning=${usage.reasoningTokens}` : "";
+  const finishInfo = usage.finishReason ? ` finish=${usage.finishReason}${usage.nativeFinishReason ? `/${usage.nativeFinishReason}` : ""}` : "";
+  console.log(`[llm] API response: ${usage.inputTokens} in + ${usage.outputTokens} out tokens,${cacheInfo} ${usage.durationMs}ms${routeInfo}${costInfo}${reasoningInfo}${finishInfo}`);
 
   // Parse response
   const expectedIds = posts.map((p) => p.id);

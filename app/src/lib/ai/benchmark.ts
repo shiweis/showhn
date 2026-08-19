@@ -16,9 +16,12 @@
  * - Multiple flavors per tier where justified (gem: constraint craft + collaboration)
  * - AI/agent calibrators present at every relevant tier
  * - Distinct failure modes at the floor (narrative-as-substitute, commodity clone, spec-as-product)
- * - Drop any calibrator that BOTH baseline AND a tested candidate model consistently
- *   miscall — those are bad calibrators, not bad models. Dropped: Habit tracker
- *   (always called mid), Wispr Flow alt (always called solid).
+ * - Labels are reviewed against the rubric and project evidence independently of
+ *   model agreement. A model repeatedly missing a defensible label is an eval signal,
+ *   not a reason to redefine the label around that model's capabilities.
+ * - Aug 2026 audit: restored the micro-habit tracker as a high-confidence pass and
+ *   removed RTS, whose repository gained a runnable starter and no longer matched
+ *   its "no working code" rationale.
  */
 
 import type { Tier } from "./llm";
@@ -139,11 +142,11 @@ export const BENCHMARK_ENTRIES: BenchmarkEntry[] = [
       "Every tool exists on CyberChef, in browser DevTools, and on 50 other static sites. No chaining, no advanced features. Pattern: zero differentiation from free dominant alternatives.",
   },
   {
-    postId: 47206680,
-    title: "RTS – A Git-native execution provenance protocol for AI decisions",
+    postId: 47057956,
+    title: "Free printable micro-habit tracker inspired by Atomic Habits",
     tier: "pass",
     reason:
-      "\"Git-native protocol for AI execution provenance\" with no working code, no demo, no install command — just philosophy (\"Not observable. Reconstructable.\") and bullet lists of what RTS is not. Pattern: spec-as-substitute-for-product, manifesto with no implementation.",
+      "A printable checkbox calendar with habit names and a month picker. It is functional, but a spreadsheet or paper grid reproduces it exactly. Pattern: single-gimmick utility with no technical or product depth.",
   },
 ];
 
