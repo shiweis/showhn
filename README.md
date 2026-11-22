@@ -98,6 +98,7 @@ See [`.env.example`](app/.env.example) for all available options:
 | `SCREENSHOT_CONCURRENCY` | `4` | Parallel browser instances |
 | `SCREENSHOT_TIMEOUT` | `15000` | Screenshot timeout in ms |
 | `GITHUB_TOKEN` | — | GitHub API token (optional, raises rate limit from 60 to 5000 req/hr) |
+| `REMOVED_POST_IDS` | — | HN post ids removed at their author's request, comma-separated; ingest skips them. Set in `.env.local` only |
 
 ### Existing databases
 

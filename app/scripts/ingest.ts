@@ -12,6 +12,7 @@ import * as schema from "../src/lib/db/schema";
 import { enqueuePostTasks } from "../src/lib/queue";
 import { refreshStalePosts } from "../src/lib/refresh";
 import { syncPostToFts } from "../src/lib/db/fts";
+import { parseRemovedPostIds } from "../src/lib/removed-posts";
 import path from "path";
 import dotenv from "dotenv";
 
@@ -25,6 +26,10 @@ const db = drizzle(sqlite, { schema });
 
 const ALGOLIA_BASE = "https://hn.algolia.com/api/v1/search_by_date";
 const HITS_PER_PAGE = 100;
+
+// Author-requested removals must stay removed even if Algolia returns them again.
+// The ids are kept out of the repository, in REMOVED_POST_IDS in .env.local.
+const REMOVED_POST_IDS = parseRemovedPostIds(process.env.REMOVED_POST_IDS);
 
 interface AlgoliaHit {
   objectID: string;
@@ -94,6 +99,7 @@ function extractUrlFromText(storyText: string | null): string | null {
 function upsertPost(hit: AlgoliaHit) {
   const now = Math.floor(Date.now() / 1000);
   const id = parseInt(hit.objectID, 10);
+  if (REMOVED_POST_IDS.has(id)) return false;
 
   // If no URL field, try to extract from story_text
   const resolvedUrl = hit.url || extractUrlFromText(hit.story_text);
@@ -157,6 +163,7 @@ async function ingest(backfill = false) {
     `[ingest] Starting ${backfill ? "backfill (30 days)" : "hourly"} ingestion...`
   );
   console.log(`[ingest] Fetching posts since ${new Date(startTimestamp * 1000).toISOString()}`);
+  console.log(`[ingest] Author-removed posts kept out: ${REMOVED_POST_IDS.size}`);
 
   let page = 0;
   let totalFetched = 0;
