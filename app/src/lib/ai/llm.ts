@@ -534,7 +534,11 @@ export function buildAnthropicRequest(input: {
     model: input.model,
     max_tokens: ANTHROPIC_MAX_TOKENS,
     // The rubric is identical across calls, so cache it (Haiku 5.5 minimum: 512 tokens).
-    system: [{ type: "text", text: input.systemPrompt, cache_control: { type: "ephemeral" } }],
+    // One-hour lifetime: posts arrive in half-hourly ingest runs, and the default
+    // 5-minute entry would expire between them. A one-hour write is billed at 2x input.
+    system: [
+      { type: "text", text: input.systemPrompt, cache_control: { type: "ephemeral", ttl: "1h" } },
+    ],
     messages: [{ role: "user", content: input.content }],
     ...(input.thinking ? { thinking: { type: input.thinking } } : {}),
     ...(Object.keys(outputConfig).length > 0 ? { output_config: outputConfig } : {}),

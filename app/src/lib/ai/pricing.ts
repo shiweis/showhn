@@ -16,6 +16,10 @@ type ModelPrice = {
    * Anthropic reports cached prompt tokens outside `input_tokens` and bills
    * them at these multiples of the input rate. Left unset for OpenRouter
    * models, whose prompt-token count already includes cached tokens.
+   *
+   * The write multiplier is the one-hour rate (2x), because every Anthropic
+   * request is built with a one-hour cache lifetime (buildAnthropicRequest in
+   * llm.ts). The default 5-minute lifetime bills writes at 1.25x.
    */
   cacheWriteMultiplier?: number;
   cacheReadMultiplier?: number;
@@ -23,9 +27,9 @@ type ModelPrice = {
 
 const PRICING: Record<string, ModelPrice> = {
   // Rate card for prompts of 100K tokens or fewer; judging prompts are ~10K.
-  "claude-haiku-5-5": { input: 0.1, output: 0.5, cacheWriteMultiplier: 1.25, cacheReadMultiplier: 0.1 },
+  "claude-haiku-5-5": { input: 0.1, output: 0.5, cacheWriteMultiplier: 2, cacheReadMultiplier: 0.1 },
   // Used as the reference labeller. Cache reads are $0.20/M, i.e. 0.025x input.
-  "claude-fable-5-2": { input: 8, output: 40, cacheWriteMultiplier: 1.25, cacheReadMultiplier: 0.025 },
+  "claude-fable-5-2": { input: 8, output: 40, cacheWriteMultiplier: 2, cacheReadMultiplier: 0.025 },
   "minimax/minimax-m3": { input: 0.23, output: 0.96 },
   "qwen/qwen3.5-397b-a17b": { input: 0.39, output: 2.34 },
 };

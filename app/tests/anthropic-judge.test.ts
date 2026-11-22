@@ -39,7 +39,7 @@ function message(overrides: Record<string, unknown>): Anthropic.Messages.Message
   } as unknown as Anthropic.Messages.Message;
 }
 
-test("Anthropic judge request ends on the user turn, with the rubric as a cacheable system block", () => {
+test("Anthropic judge request ends on the user turn, with the rubric as a system block cached for one hour", () => {
   const request = buildAnthropicRequest({
     systemPrompt: "rubric",
     content: userContent,
@@ -48,8 +48,9 @@ test("Anthropic judge request ends on the user turn, with the rubric as a cachea
 
   // Claude Haiku 5.5 rejects a trailing assistant prefill with a 400.
   assert.deepEqual(request.messages, [{ role: "user", content: userContent }]);
+  // Ingest runs every 30 minutes, so the default 5-minute cache would expire between runs.
   assert.deepEqual(request.system, [
-    { type: "text", text: "rubric", cache_control: { type: "ephemeral" } },
+    { type: "text", text: "rubric", cache_control: { type: "ephemeral", ttl: "1h" } },
   ]);
   assert.equal(request.model, "claude-haiku-5-5");
 });
@@ -246,7 +247,7 @@ test("an HTTP error from the provider counts as an outage even when its message 
   assert.equal(isResponseFormatFailure(providerError), false);
 });
 
-test("Claude Haiku 5.5 cost bills cache writes at 1.25x and cache reads at 0.1x of the input rate", () => {
+test("Claude Haiku 5.5 cost bills one-hour cache writes at 2x and cache reads at 0.1x of the input rate", () => {
   const cost = estimateCostUsd("claude-haiku-5-5", {
     inputTokens: 1_000_000,
     outputTokens: 1_000_000,
@@ -254,8 +255,8 @@ test("Claude Haiku 5.5 cost bills cache writes at 1.25x and cache reads at 0.1x 
     cacheReadTokens: 1_000_000,
   });
 
-  // $0.10 input + $0.125 cache write + $0.01 cache read + $0.50 output
-  assert.equal(Number(cost.toFixed(6)), 0.735);
+  // $0.10 input + $0.20 cache write + $0.01 cache read + $0.50 output
+  assert.equal(Number(cost.toFixed(6)), 0.81);
 });
 
 test("Claude Fable 5.2 cost uses its own rates, with cache reads at $0.20 per million tokens", () => {
@@ -266,8 +267,8 @@ test("Claude Fable 5.2 cost uses its own rates, with cache reads at $0.20 per mi
     cacheReadTokens: 1_000_000,
   });
 
-  // $8 input + $10 cache write + $0.20 cache read + $40 output
-  assert.equal(Number(cost.toFixed(6)), 58.2);
+  // $8 input + $16 one-hour cache write + $0.20 cache read + $40 output
+  assert.equal(Number(cost.toFixed(6)), 64.2);
 });
 
 test("OpenRouter models are priced on prompt tokens, which already include cached tokens", () => {
