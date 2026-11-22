@@ -32,7 +32,7 @@ An AI-powered visual gallery for [Show HN](https://news.ycombinator.com/showhn.h
 
 - Node.js 20+
 - A Chromium-compatible environment (for screenshots)
-- An OpenRouter API key for the default MiniMax configuration, or an OpenAI/Anthropic key for another provider
+- An Anthropic API key for the default Claude Haiku 5.5 configuration, or an OpenAI/OpenRouter key for another provider
 
 ### Setup
 
@@ -88,8 +88,10 @@ See [`.env.example`](app/.env.example) for all available options:
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `DATABASE_PATH` | `./data/showhn.db` | Path to SQLite database |
-| `ANALYSIS_PROVIDER` | `openrouter` | LLM provider (`openai`, `anthropic`, or `openrouter`) |
-| `ANALYSIS_MODEL` | `minimax/minimax-m3` | Model name for analysis |
+| `ANALYSIS_PROVIDER` | `anthropic` | LLM provider (`openai`, `anthropic`, or `openrouter`) |
+| `ANALYSIS_MODEL` | `claude-haiku-5-5` | Model name for analysis |
+| `ANALYSIS_ANTHROPIC_EFFORT` | `medium` | Anthropic effort level (`low` to `max`); unset uses the model default |
+| `BATCH_SIZE` | `1` | Posts judged per LLM call |
 | `OPENAI_API_KEY` | — | OpenAI API key |
 | `ANTHROPIC_API_KEY` | — | Anthropic API key |
 | `OPENROUTER_API_KEY` | — | OpenRouter API key (when using `openrouter` provider) |

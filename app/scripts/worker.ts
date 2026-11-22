@@ -17,6 +17,7 @@ import { analyzeBatch, analyzePost, buildBatches, tierToPickScore, type BatchPos
 import { fetchPageContent, parseGitHubRepo, fetchGitHubReadme, fetchGitHubMeta } from "../src/lib/fetchers";
 import { installPublicNetworkGuard } from "../src/lib/browser-security";
 import { syncPostToFts } from "../src/lib/db/fts";
+import { errorMessage, errorStatus, isResponseFormatFailure } from "../src/lib/ai/failures";
 import { loadScreenshot } from "./lib/screenshot-files";
 import {
   dequeueBatch,
@@ -77,31 +78,6 @@ const STATS_INTERVAL = 60_000; // Log stats every 60s
 let running = true;
 let browser: Browser | null = null;
 let providerFailureStreak = 0;
-
-function errorMessage(error: unknown): string {
-  return (error instanceof Error ? error.message : String(error))
-    .replace(/\s+/g, " ")
-    .slice(0, 1000);
-}
-
-function errorStatus(error: unknown): number | undefined {
-  const value = (error as { status?: unknown } | null)?.status;
-  return typeof value === "number" ? value : undefined;
-}
-
-function isResponseFormatFailure(error: unknown): boolean {
-  // SDK HTTP errors are provider/configuration failures. Retrying each post
-  // cannot repair them, even when their message mentions JSON or parsing.
-  if (errorStatus(error) !== undefined) return false;
-  const message = errorMessage(error).toLowerCase();
-  return [
-    "json",
-    "parse",
-    "batch response",
-    "missing all post ids",
-    "no result returned",
-  ].some((marker) => message.includes(marker));
-}
 
 async function backoffAfterProviderFailure(error: unknown): Promise<void> {
   providerFailureStreak++;

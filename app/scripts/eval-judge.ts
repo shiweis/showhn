@@ -10,21 +10,41 @@
  *   npx tsx scripts/eval-judge.ts --split calibration --prompt production
  *   npx tsx scripts/eval-judge.ts --split holdout --prompt minimax-m3-v1 \
  *     --output data/evals/minimax-m3-holdout.json
+ *   npx tsx scripts/eval-judge.ts --model anthropic:claude-haiku-5-5 \
+ *     --split holdout --effort low --thinking adaptive --repeats 3
+ *
+ *   npx tsx scripts/eval-judge.ts --model anthropic:claude-haiku-5-5 \
+ *     --split reference --reference data/evals/reference-v2-labels.jsonl
+ *
+ * The reference split scores against labels written by scripts/label-reference.ts.
+ * A post whose labelling runs disagree accepts either tier.
+ *
+ * --effort and --thinking apply to Anthropic models; --reasoning, --temperature,
+ * and the router flags apply to OpenRouter models.
  */
 
 import Database from "better-sqlite3";
+import fs from "fs";
 import path from "path";
 import dotenv from "dotenv";
 import {
+  AnalysisRefusedError,
+  AnalysisTruncatedError,
+  ANTHROPIC_EFFORTS,
+  ANTHROPIC_THINKING_MODES,
   analyzeBatch,
   buildBatches,
   TIERS,
   tierToPickScore,
   type AnalysisResult,
+  type AnthropicEffort,
+  type AnthropicThinkingMode,
   type BatchPost,
   type Tier,
   type UsageStats,
 } from "../src/lib/ai/llm";
+import { estimateCostUsd } from "../src/lib/ai/pricing";
+import { buildReferenceEntries, scoreTier } from "../src/lib/ai/eval-scoring";
 import { BENCHMARK_ENTRIES, type BenchmarkEntry } from "../src/lib/ai/benchmark";
 import {
   AUDITED_COMBINED_HOLDOUT_ENTRIES,
@@ -38,7 +58,11 @@ dotenv.config({ path: path.join(process.cwd(), ".env.local"), override: false })
 
 type PromptName = "production" | "minimax-m3-v1" | "minimax-m3-v2" | "minimax-m3-v3";
 
-/** Added after the shared rubric. Production selection remains explicit through environment config. */
+/**
+ * Added after the shared rubric. "production" is the base rubric with no appendix.
+ * The appendix is always passed explicitly, so ANALYSIS_PROMPT_VARIANT in the
+ * environment never changes what an eval run measures.
+ */
 const PROMPT_APPENDICES: Record<PromptName, string> = {
   production: "",
   "minimax-m3-v1": `## FINAL TIER DECISION OVERRIDES
@@ -117,7 +141,10 @@ function parseArgs() {
   const args = process.argv.slice(2);
   const flags: {
     model: string;
-    split: "calibration" | "historical" | "recent" | "holdout";
+    split: "calibration" | "historical" | "recent" | "holdout" | "reference";
+    reference?: string;
+    /** Candidate rubric sent as the whole system prompt (not valid for the calibration split). */
+    systemPromptFile?: string;
     prompt: PromptName;
     concurrency: number;
     repeats: number;
@@ -129,6 +156,8 @@ function parseArgs() {
     structuredOutput: boolean;
     reasoningEffort: "none" | "minimal" | "low" | "medium" | "high";
     temperature: number;
+    effort?: AnthropicEffort;
+    thinking?: AnthropicThinkingMode;
     output?: string;
     limit?: number;
   } = {
@@ -152,9 +181,9 @@ function parseArgs() {
     if (arg === "--model") flags.model = args[++i];
     else if (arg === "--split") {
       const value = args[++i];
-      if (!["calibration", "historical", "recent", "holdout"].includes(value)) {
+      if (!["calibration", "historical", "recent", "holdout", "reference"].includes(value)) {
         throw new Error(
-          `Invalid --split "${value}"; use calibration, historical, recent, or holdout`,
+          `Invalid --split "${value}"; use calibration, historical, recent, holdout, or reference`,
         );
       }
       flags.split = value as typeof flags.split;
@@ -180,6 +209,21 @@ function parseArgs() {
       flags.reasoningEffort = value;
     }
     else if (arg === "--temperature") flags.temperature = Number(args[++i]);
+    else if (arg === "--effort") {
+      const value = args[++i] as AnthropicEffort;
+      if (!ANTHROPIC_EFFORTS.includes(value)) {
+        throw new Error(`Invalid --effort "${value}"; use ${ANTHROPIC_EFFORTS.join(", ")}`);
+      }
+      flags.effort = value;
+    } else if (arg === "--thinking") {
+      const value = args[++i] as AnthropicThinkingMode;
+      if (!ANTHROPIC_THINKING_MODES.includes(value)) {
+        throw new Error(`Invalid --thinking "${value}"; use ${ANTHROPIC_THINKING_MODES.join(", ")}`);
+      }
+      flags.thinking = value;
+    }
+    else if (arg === "--reference") flags.reference = args[++i];
+    else if (arg === "--system-prompt-file") flags.systemPromptFile = args[++i];
     else if (arg === "--output") flags.output = args[++i];
     else if (arg === "--limit") flags.limit = Number(args[++i]);
     else throw new Error(`Unknown argument: ${arg}`);
@@ -199,6 +243,12 @@ function parseArgs() {
   }
   if (!Number.isFinite(flags.temperature) || flags.temperature < 0 || flags.temperature > 2) {
     throw new Error("--temperature must be a number from 0 to 2");
+  }
+  if (flags.systemPromptFile && flags.split === "calibration") {
+    throw new Error("--system-prompt-file cannot be used with the calibration split (leave-one-out needs the built prompt)");
+  }
+  if (flags.split === "reference" && !flags.reference) {
+    throw new Error("--split reference needs --reference <labels.jsonl>");
   }
   if (flags.limit !== undefined && (!Number.isInteger(flags.limit) || flags.limit < 1)) {
     throw new Error("--limit must be a positive integer");
@@ -247,6 +297,10 @@ type ScoreRecord = {
   title: string;
   repeat: number;
   expected: Tier;
+  /** Every tier the reference accepts, when it accepts more than one. */
+  acceptable?: Tier[];
+  /** False when the labelling runs disagreed on this post. */
+  firm?: boolean;
   actual?: Tier;
   exact: boolean;
   tierDistance?: number;
@@ -258,17 +312,16 @@ type ScoreRecord = {
   highlightWithinLimit?: boolean;
   completeEditorialFields?: boolean;
   error?: string;
+  errorKind?: ErrorKind;
 };
 
-const PRICING: Record<string, { input: number; output: number }> = {
-  "minimax/minimax-m3": { input: 0.23, output: 0.96 },
-  "qwen/qwen3.5-397b-a17b": { input: 0.39, output: 2.34 },
-};
+/** Keeps refusals and truncations out of the generic error count. */
+type ErrorKind = "refusal" | "truncated" | "error";
 
-function estimatedCost(model: string, usage: UsageStats): number {
-  const pricing = PRICING[model];
-  if (!pricing) return 0;
-  return (usage.inputTokens * pricing.input + usage.outputTokens * pricing.output) / 1_000_000;
+function classifyError(error: unknown): ErrorKind {
+  if (error instanceof AnalysisRefusedError) return "refusal";
+  if (error instanceof AnalysisTruncatedError) return "truncated";
+  return "error";
 }
 
 function wordCount(value: string): number {
@@ -293,16 +346,46 @@ async function runWithConcurrency<T, R>(
   return output;
 }
 
-function tierIndex(tier: Tier): number {
-  return TIERS.indexOf(tier);
+/** A labelled case. Reference-split cases may accept more than one tier. */
+type EvalEntry = BenchmarkEntry & { acceptable?: Tier[]; firm?: boolean };
+
+function scoreAgainst(entry: EvalEntry, actual: Tier) {
+  const { exact, tierDistance, nearest } = scoreTier(actual, entry.acceptable ?? [entry.tier]);
+  return {
+    exact,
+    tierDistance,
+    signedDelta: tierToPickScore(actual) - tierToPickScore(nearest),
+    acceptable: entry.acceptable,
+    firm: entry.firm,
+  };
+}
+
+/** Reference labels from scripts/label-reference.ts; titles are filled in from the database. */
+function loadReferenceEntries(file: string): EvalEntry[] {
+  const rows = fs
+    .readFileSync(file, "utf8")
+    .split("\n")
+    .filter((line) => line.trim())
+    .map((line) => JSON.parse(line) as { postId: number; run: number; tier: Tier });
+  return buildReferenceEntries(rows).map((entry) => ({
+    postId: entry.postId,
+    title: "",
+    tier: entry.acceptable[0],
+    reason: "",
+    acceptable: entry.acceptable,
+    firm: entry.firm,
+  }));
 }
 
 async function scoreEntries(
-  entries: BenchmarkEntry[],
+  entries: EvalEntry[],
   rows: Map<number, PostRow>,
   spec: ModelSpec,
   flags: ReturnType<typeof parseArgs>,
 ): Promise<ScoreRecord[]> {
+  const systemPromptOverride = flags.systemPromptFile
+    ? fs.readFileSync(flags.systemPromptFile, "utf8")
+    : undefined;
   if (flags.batchSize > 1) {
     if (flags.split === "calibration") {
       throw new Error("Batched calibration cannot preserve leave-one-out examples; use --batch-size 1");
@@ -334,7 +417,10 @@ async function scoreEntries(
             routerReasoningEffort: flags.reasoningEffort,
             routerTemperature: flags.temperature,
             structuredOutput: flags.structuredOutput,
-            promptAppendix: PROMPT_APPENDICES[flags.prompt] || undefined,
+            anthropicEffort: flags.effort,
+            anthropicThinking: flags.thinking,
+            systemPromptOverride,
+            promptAppendix: PROMPT_APPENDICES[flags.prompt],
           });
 
           return batch.map((post, index) => {
@@ -358,13 +444,11 @@ async function scoreEntries(
               repeat,
               expected: entry.tier,
               actual: result.tier,
-              exact: result.tier === entry.tier,
-              tierDistance: Math.abs(tierIndex(result.tier) - tierIndex(entry.tier)),
-              signedDelta: tierToPickScore(result.tier) - tierToPickScore(entry.tier),
+              ...scoreAgainst(entry, result.tier),
               result,
               // Record call-level usage once so batch cost and tokens are not multiplied.
               usage: index === 0 ? usage : undefined,
-              estimatedCostUsd: index === 0 ? estimatedCost(spec.model, usage) : 0,
+              estimatedCostUsd: index === 0 ? estimateCostUsd(spec.model, usage) : 0,
               highlightWords,
               highlightWithinLimit: highlightWords <= 15,
               completeEditorialFields:
@@ -384,6 +468,7 @@ async function scoreEntries(
               exact: false,
               estimatedCostUsd: 0,
               error: (error as Error).message,
+              errorKind: classifyError(error),
             };
           });
         }
@@ -421,8 +506,11 @@ async function scoreEntries(
         routerReasoningEffort: flags.reasoningEffort,
         routerTemperature: flags.temperature,
         structuredOutput: flags.structuredOutput,
+        anthropicEffort: flags.effort,
+        anthropicThinking: flags.thinking,
+        systemPromptOverride,
         excludeBenchmarkIds,
-        promptAppendix: PROMPT_APPENDICES[flags.prompt] || undefined,
+        promptAppendix: PROMPT_APPENDICES[flags.prompt],
       });
       const result = results.get(entry.postId);
       if (!result) throw new Error("model response did not include this post");
@@ -434,12 +522,10 @@ async function scoreEntries(
         repeat,
         expected: entry.tier,
         actual: result.tier,
-        exact: result.tier === entry.tier,
-        tierDistance: Math.abs(tierIndex(result.tier) - tierIndex(entry.tier)),
-        signedDelta: tierToPickScore(result.tier) - tierToPickScore(entry.tier),
+        ...scoreAgainst(entry, result.tier),
         result,
         usage,
-        estimatedCostUsd: estimatedCost(spec.model, usage),
+        estimatedCostUsd: estimateCostUsd(spec.model, usage),
         highlightWords,
         highlightWithinLimit: highlightWords <= 15,
         completeEditorialFields:
@@ -456,6 +542,7 @@ async function scoreEntries(
         exact: false,
         estimatedCostUsd: 0,
         error: (error as Error).message,
+        errorKind: classifyError(error),
       };
     }
   });
@@ -465,9 +552,15 @@ function summarize(records: ScoreRecord[]) {
   const ok = records.filter((record) => !record.error && record.actual);
   const usageRecords = ok.filter((record) => record.usage);
   const exact = ok.filter((record) => record.exact).length;
+  const firm = ok.filter((record) => record.firm !== false);
   const adjacent = ok.filter((record) => (record.tierDistance ?? 99) <= 1).length;
   const totalInputTokens = usageRecords.reduce((sum, record) => sum + record.usage!.inputTokens, 0);
   const totalOutputTokens = usageRecords.reduce((sum, record) => sum + record.usage!.outputTokens, 0);
+  const totalCacheReadTokens = usageRecords.reduce((sum, record) => sum + record.usage!.cacheReadTokens, 0);
+  const totalCacheCreateTokens = usageRecords.reduce((sum, record) => sum + record.usage!.cacheCreateTokens, 0);
+  const latencies = usageRecords.map((record) => record.usage!.durationMs).sort((a, b) => a - b);
+  const percentile = (p: number) =>
+    latencies.length ? latencies[Math.min(latencies.length - 1, Math.floor(latencies.length * p))] : 0;
   const billed = usageRecords.map((record) => record.usage!.billedCostUsd);
   const billedCostUsd = billed.every((cost) => cost !== undefined)
     ? (billed as number[]).reduce((sum, cost) => sum + cost, 0)
@@ -497,7 +590,13 @@ function summarize(records: ScoreRecord[]) {
     attempted: records.length,
     successful: ok.length,
     errors: records.length - ok.length,
+    refusals: records.filter((record) => record.errorKind === "refusal").length,
+    truncations: records.filter((record) => record.errorKind === "truncated").length,
     exactPct: ok.length ? (exact / ok.length) * 100 : 0,
+    boundaryRecords: ok.filter((record) => record.firm === false).length,
+    exactOnFirmPct: firm.length
+      ? (firm.filter((record) => record.exact).length / firm.length) * 100
+      : 0,
     adjacentPct: ok.length ? (adjacent / ok.length) * 100 : 0,
     meanTierDistance: ok.length
       ? ok.reduce((sum, record) => sum + (record.tierDistance || 0), 0) / ok.length
@@ -513,6 +612,8 @@ function summarize(records: ScoreRecord[]) {
       : 0,
     totalInputTokens,
     totalOutputTokens,
+    totalCacheReadTokens,
+    totalCacheCreateTokens,
     billedCostUsd,
     estimatedCostUsd,
     apiCalls: usageRecords.length,
@@ -520,6 +621,8 @@ function summarize(records: ScoreRecord[]) {
       ? usageRecords.reduce((sum, record) => sum + record.usage!.durationMs, 0) /
         usageRecords.length
       : 0,
+    p50LatencyMs: percentile(0.5),
+    p90LatencyMs: percentile(0.9),
     providerCounts,
     byExpectedTier,
     unstablePosts: [...stability.entries()]
@@ -534,7 +637,7 @@ function printRecords(records: ScoreRecord[]) {
     const actual = record.actual || "error";
     const title = record.title.length > 62 ? `${record.title.slice(0, 59)}...` : record.title;
     console.log(
-      `${mark} r${record.repeat} ${record.expected.padEnd(6)} -> ${actual.padEnd(6)} ${record.postId} ${title}`,
+      `${mark} r${record.repeat} ${(record.acceptable ?? [record.expected]).join("|").padEnd(6)} -> ${actual.padEnd(6)} ${record.postId} ${title}`,
     );
     if (record.error) console.log(`     ${record.error}`);
   }
@@ -543,16 +646,27 @@ function printRecords(records: ScoreRecord[]) {
 async function main() {
   const flags = parseArgs();
   const spec = parseModelSpec(flags.model);
-  const sourceEntries =
+  const sourceEntries: EvalEntry[] =
     flags.split === "calibration"
       ? BENCHMARK_ENTRIES
       : flags.split === "historical"
         ? AUDITED_HOLDOUT_ENTRIES
         : flags.split === "recent"
           ? AUDITED_RECENT_ENTRIES
-          : AUDITED_COMBINED_HOLDOUT_ENTRIES;
+          : flags.split === "reference"
+            ? loadReferenceEntries(flags.reference!)
+            : AUDITED_COMBINED_HOLDOUT_ENTRIES;
   const entries = flags.limit ? sourceEntries.slice(0, flags.limit) : sourceEntries;
   const rows = fetchRows(entries.map((entry) => entry.postId));
+  for (const entry of entries) entry.title ||= rows.get(entry.postId)?.title ?? String(entry.postId);
+
+  // Calibration posts sit inside the system prompt, so judging them here would leak the answer.
+  const promptLeak = flags.split === "reference"
+    ? entries.filter((entry) => BENCHMARK_ENTRIES.some((calibrator) => calibrator.postId === entry.postId))
+    : [];
+  if (promptLeak.length) {
+    throw new Error(`Reference set includes calibration posts: ${promptLeak.map((entry) => entry.postId).join(", ")}`);
+  }
 
   const overlap = AUDITED_COMBINED_HOLDOUT_ENTRIES.filter((holdout) =>
     BENCHMARK_ENTRIES.some((calibrator) => calibrator.postId === holdout.postId),
@@ -563,9 +677,13 @@ async function main() {
 
   console.log(`[judge-eval] model=${spec.raw}`);
   console.log(
-    `[judge-eval] split=${flags.split} n=${entries.length} repeats=${flags.repeats} prompt=${flags.prompt} screenshots=${flags.screenshots} batchSize=${flags.batchSize} maxBatchTokens=${flags.maxBatchTokens} route=${flags.routerProvider} fallbacks=${flags.routerFallbacks} structured=${flags.structuredOutput} reasoning=${flags.reasoningEffort} temperature=${flags.temperature}`,
+    `[judge-eval] split=${flags.split} n=${entries.length} repeats=${flags.repeats} prompt=${flags.prompt} screenshots=${flags.screenshots} batchSize=${flags.batchSize} maxBatchTokens=${flags.maxBatchTokens} route=${flags.routerProvider} fallbacks=${flags.routerFallbacks} structured=${flags.structuredOutput} reasoning=${flags.reasoningEffort} temperature=${flags.temperature} effort=${flags.effort ?? "default"} thinking=${flags.thinking ?? "default"}`,
   );
-  console.log("[judge-eval] ground truth: human rubric audit; no production/Qwen labels used");
+  console.log(
+    flags.split === "reference"
+      ? `[judge-eval] ground truth: labelling runs in ${flags.reference}; a post whose runs disagree accepts either tier`
+      : "[judge-eval] ground truth: earlier model-assisted rubric audit (benchmark.ts / judge-ground-truth.ts)",
+  );
 
   const startedAt = new Date().toISOString();
   const records = await scoreEntries(entries, rows, spec, flags);
@@ -574,7 +692,7 @@ async function main() {
 
   console.log("\n[judge-eval] summary");
   console.log(
-    `  exact=${summary.exactPct.toFixed(1)}% adjacent=${summary.adjacentPct.toFixed(1)}% errors=${summary.errors}/${summary.attempted}`,
+    `  exact=${summary.exactPct.toFixed(1)}% (firm-label cases ${summary.exactOnFirmPct.toFixed(1)}%, boundary records ${summary.boundaryRecords}) adjacent=${summary.adjacentPct.toFixed(1)}% errors=${summary.errors}/${summary.attempted} (refusals=${summary.refusals} truncated=${summary.truncations})`,
   );
   console.log(
     `  mean tier distance=${summary.meanTierDistance.toFixed(2)} signed bias=${summary.meanSignedDelta >= 0 ? "+" : ""}${summary.meanSignedDelta.toFixed(2)}`,
@@ -583,10 +701,10 @@ async function main() {
     `  highlight<=15=${summary.highlightCompliancePct.toFixed(1)}% complete fields=${summary.editorialCompletenessPct.toFixed(1)}%`,
   );
   console.log(
-    `  tokens=${summary.totalInputTokens} in + ${summary.totalOutputTokens} out estimated=$${summary.estimatedCostUsd.toFixed(4)} billed=${summary.billedCostUsd === undefined ? "unreported" : `$${summary.billedCostUsd.toFixed(4)}`}`,
+    `  tokens=${summary.totalInputTokens} in + ${summary.totalOutputTokens} out cache_read=${summary.totalCacheReadTokens} cache_write=${summary.totalCacheCreateTokens} estimated=$${summary.estimatedCostUsd.toFixed(4)} billed=${summary.billedCostUsd === undefined ? "unreported" : `$${summary.billedCostUsd.toFixed(4)}`}`,
   );
   console.log(
-    `  calls=${summary.apiCalls} avg call latency=${(summary.avgLatencyMs / 1000).toFixed(1)}s providers=${JSON.stringify(summary.providerCounts)}`,
+    `  calls=${summary.apiCalls} avg call latency=${(summary.avgLatencyMs / 1000).toFixed(1)}s p50=${(summary.p50LatencyMs / 1000).toFixed(1)}s p90=${(summary.p90LatencyMs / 1000).toFixed(1)}s providers=${JSON.stringify(summary.providerCounts)}`,
   );
   for (const tier of TIERS) {
     const tierSummary = summary.byExpectedTier[tier];
@@ -612,7 +730,14 @@ async function main() {
           structuredOutput: flags.structuredOutput,
           reasoningEffort: flags.reasoningEffort,
           temperature: flags.temperature,
-          groundTruth: "human-audited rubric labels; production/Qwen judgments excluded",
+          anthropicEffort: flags.effort ?? null,
+          anthropicThinking: flags.thinking ?? null,
+          systemPromptFile: flags.systemPromptFile ?? null,
+          reference: flags.reference ?? null,
+          groundTruth:
+            flags.split === "reference"
+              ? "labelling runs from scripts/label-reference.ts"
+              : "earlier model-assisted rubric audit",
           summary,
           records,
         },

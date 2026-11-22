@@ -107,12 +107,47 @@ export type UsageStats = {
   reasoningTokens?: number;
   finishReason?: string;
   nativeFinishReason?: string;
+  /** Model id the provider reports having served, when it differs from or confirms the request. */
+  servedModel?: string;
 };
 
 type ProviderResponse = {
   text: string;
   usage: UsageStats;
 };
+
+/** Anthropic `output_config.effort` levels (Claude Haiku 5.5 defaults to medium). */
+export const ANTHROPIC_EFFORTS = ["low", "medium", "high", "xhigh", "max"] as const;
+export type AnthropicEffort = (typeof ANTHROPIC_EFFORTS)[number];
+
+/** Anthropic thinking modes this pipeline sets explicitly; unset leaves the model default. */
+export const ANTHROPIC_THINKING_MODES = ["adaptive", "disabled"] as const;
+export type AnthropicThinkingMode = (typeof ANTHROPIC_THINKING_MODES)[number];
+
+/**
+ * The provider's safety classifier declined the request. This arrives as a
+ * normal HTTP 200 with stop_reason "refusal", so it is specific to the
+ * submitted content rather than a provider outage.
+ */
+export class AnalysisRefusedError extends Error {
+  readonly category: string | null;
+
+  constructor(category: string | null = null, explanation?: string) {
+    super(
+      `Model refused the request${category ? ` (${category})` : ""}${explanation ? `: ${explanation}` : ""}`,
+    );
+    this.name = "AnalysisRefusedError";
+    this.category = category;
+  }
+}
+
+/** The reply hit max_tokens before any answer text, typically because thinking used the budget. */
+export class AnalysisTruncatedError extends Error {
+  constructor() {
+    super("Model reply hit max_tokens before producing an answer");
+    this.name = "AnalysisTruncatedError";
+  }
+}
 
 const CATEGORIES = [
   "AI/ML",
@@ -135,7 +170,7 @@ const CATEGORIES = [
 
 /** Static system prompt — includes benchmark calibration. Cached by Anthropic.
  *  excludeBenchmarkIds: leave-one-out support for eval — omit these posts from calibration. */
-function buildSystemPrompt(excludeBenchmarkIds?: number[], promptAppendix?: string): string {
+export function buildSystemPrompt(excludeBenchmarkIds?: number[], promptAppendix?: string): string {
   const benchmark = buildBenchmarkContext(excludeBenchmarkIds);
   return `You're a sharp, opinionated tech writer reviewing Show HN projects. Analyze the project provided and return a JSON object.
 
@@ -381,6 +416,26 @@ function optionalReasoningEffortEnv(): "none" | "minimal" | "low" | "medium" | "
   return value as "none" | "minimal" | "low" | "medium" | "high";
 }
 
+function parseAnthropicEffort(value: string | undefined): AnthropicEffort | undefined {
+  const trimmed = value?.trim();
+  if (!trimmed) return undefined;
+  if (!(ANTHROPIC_EFFORTS as readonly string[]).includes(trimmed)) {
+    throw new Error(`ANALYSIS_ANTHROPIC_EFFORT must be one of ${ANTHROPIC_EFFORTS.join(", ")}`);
+  }
+  return trimmed as AnthropicEffort;
+}
+
+function parseAnthropicThinking(value: string | undefined): AnthropicThinkingMode | undefined {
+  const trimmed = value?.trim();
+  if (!trimmed) return undefined;
+  if (!(ANTHROPIC_THINKING_MODES as readonly string[]).includes(trimmed)) {
+    throw new Error(
+      `ANALYSIS_ANTHROPIC_THINKING must be one of ${ANTHROPIC_THINKING_MODES.join(", ")}`,
+    );
+  }
+  return trimmed as AnthropicThinkingMode;
+}
+
 
 async function callOpenAI(
   systemPrompt: string,
@@ -412,47 +467,142 @@ async function callOpenAI(
   };
 }
 
+/**
+ * Thinking shares the output budget with the answer, so the cap leaves room
+ * for both. 16k is also the largest non-streaming request the SDK allows
+ * without a timeout override.
+ */
+const ANTHROPIC_MAX_TOKENS = 16_000;
+
+/**
+ * Anthropic structured outputs reject these JSON Schema keywords. The limits
+ * they express are enforced after parsing (cleanModelString/cleanModelArray).
+ */
+const ANTHROPIC_UNSUPPORTED_SCHEMA_KEYWORDS = new Set([
+  "minLength",
+  "maxLength",
+  "minItems",
+  "maxItems",
+]);
+
+function toAnthropicJsonSchema(schema: unknown): unknown {
+  if (Array.isArray(schema)) return schema.map(toAnthropicJsonSchema);
+  if (!schema || typeof schema !== "object") return schema;
+
+  const output: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(schema)) {
+    if (ANTHROPIC_UNSUPPORTED_SCHEMA_KEYWORDS.has(key)) continue;
+    // Keys under "properties" are field names, not keywords: keep every one.
+    output[key] =
+      key === "properties" && value && typeof value === "object"
+        ? Object.fromEntries(
+            Object.entries(value).map(([name, child]) => [name, toAnthropicJsonSchema(child)]),
+          )
+        : toAnthropicJsonSchema(value);
+  }
+  return output;
+}
+
+/**
+ * Build the Messages API request for one judging call.
+ *
+ * Current Claude models reject a trailing assistant prefill, so JSON output is
+ * steered with a structured-output schema instead. Effort and thinking are sent
+ * only when configured; unset leaves the model's own defaults.
+ */
+export function buildAnthropicRequest(input: {
+  systemPrompt: string;
+  content: Anthropic.Messages.ContentBlockParam[];
+  model: string;
+  responseSchema?: Record<string, unknown>;
+  effort?: AnthropicEffort;
+  thinking?: AnthropicThinkingMode;
+}): Anthropic.Messages.MessageCreateParamsNonStreaming {
+  const outputConfig: Anthropic.Messages.OutputConfig = {};
+  if (input.responseSchema) {
+    outputConfig.format = {
+      type: "json_schema",
+      schema: toAnthropicJsonSchema(input.responseSchema) as Record<string, unknown>,
+    };
+  }
+  if (input.effort) {
+    // "xhigh" is newer than the pinned SDK's type union; the API accepts it.
+    outputConfig.effort = input.effort as Anthropic.Messages.OutputConfig["effort"];
+  }
+
+  return {
+    model: input.model,
+    max_tokens: ANTHROPIC_MAX_TOKENS,
+    // The rubric is identical across calls, so cache it (Haiku 5.5 minimum: 512 tokens).
+    system: [{ type: "text", text: input.systemPrompt, cache_control: { type: "ephemeral" } }],
+    messages: [{ role: "user", content: input.content }],
+    ...(input.thinking ? { thinking: { type: input.thinking } } : {}),
+    ...(Object.keys(outputConfig).length > 0 ? { output_config: outputConfig } : {}),
+  };
+}
+
+/** Extract the judge's answer text and token usage from a Messages API response. */
+export function readAnthropicResponse(
+  message: Anthropic.Messages.Message,
+  durationMs: number,
+): ProviderResponse {
+  if (message.stop_reason === "refusal") {
+    // stop_details is newer than the pinned SDK's Message type.
+    const details = (
+      message as unknown as {
+        stop_details?: { category?: string | null; explanation?: string | null } | null;
+      }
+    ).stop_details;
+    throw new AnalysisRefusedError(details?.category ?? null, details?.explanation ?? undefined);
+  }
+
+  // Adaptive thinking puts thinking blocks ahead of the answer, so select by type.
+  const text = message.content
+    .filter((block): block is Anthropic.Messages.TextBlock => block.type === "text")
+    .map((block) => block.text)
+    .join("");
+
+  // A partial answer is still returned: parseBatchResult can recover complete posts from it.
+  if (!text.trim() && message.stop_reason === "max_tokens") {
+    throw new AnalysisTruncatedError();
+  }
+
+  const usage = message.usage;
+  // Thinking is billed inside output_tokens; the breakdown is newer than the pinned SDK's type.
+  const thinkingTokens = (
+    usage as unknown as { output_tokens_details?: { thinking_tokens?: number } | null }
+  ).output_tokens_details?.thinking_tokens;
+  return {
+    text,
+    usage: {
+      inputTokens: usage.input_tokens ?? 0,
+      outputTokens: usage.output_tokens ?? 0,
+      cacheReadTokens: usage.cache_read_input_tokens ?? 0,
+      cacheCreateTokens: usage.cache_creation_input_tokens ?? 0,
+      durationMs,
+      reasoningTokens: thinkingTokens,
+      finishReason: message.stop_reason ?? undefined,
+      servedModel: message.model,
+    },
+  };
+}
+
 async function callAnthropic(
   systemPrompt: string,
   content: Anthropic.Messages.ContentBlockParam[],
   model: string,
-  prefill?: string
+  options: {
+    responseSchema?: Record<string, unknown>;
+    effort?: AnthropicEffort;
+    thinking?: AnthropicThinkingMode;
+  } = {},
 ): Promise<ProviderResponse> {
   const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
   const start = Date.now();
-
-  // System prompt with cache_control for Anthropic prompt caching.
-  // ~4096 tokens — at Haiku 4.5's minimum. Cache hits save ~90% on prompt tokens.
-  const system: Anthropic.Messages.TextBlockParam[] = [
-    { type: "text", text: systemPrompt, cache_control: { type: "ephemeral" } } as Anthropic.Messages.TextBlockParam,
-  ];
-
-  // Prefill assistant turn to steer JSON output (Anthropic has no JSON mode).
-  const assistantPrefill = prefill || "{";
-  const response = await client.messages.create({
-    model,
-    max_tokens: 4000,
-    system,
-    messages: [
-      { role: "user", content },
-      { role: "assistant", content: assistantPrefill },
-    ],
-  });
-
-  const block = response.content[0];
-  const text = block.type === "text" ? `${assistantPrefill}${block.text}` : "";
-  const u = response.usage;
-
-  return {
-    text,
-    usage: {
-      inputTokens: u.input_tokens ?? 0,
-      outputTokens: u.output_tokens ?? 0,
-      cacheReadTokens: (u as unknown as Record<string, number>).cache_read_input_tokens ?? 0,
-      cacheCreateTokens: (u as unknown as Record<string, number>).cache_creation_input_tokens ?? 0,
-      durationMs: Date.now() - start,
-    },
-  };
+  const response = await client.messages.create(
+    buildAnthropicRequest({ systemPrompt, content, model, ...options }),
+  );
+  return readAnthropicResponse(response, Date.now() - start);
 }
 
 async function callOpenRouter(
@@ -840,6 +990,15 @@ export async function analyzeBatch(
     structuredOutput?: boolean;
     /** Optional OpenRouter sampling temperature. */
     routerTemperature?: number;
+    /** Anthropic effort level; defaults to ANALYSIS_ANTHROPIC_EFFORT, then the model's own default. */
+    anthropicEffort?: AnthropicEffort;
+    /** Anthropic thinking mode; defaults to ANALYSIS_ANTHROPIC_THINKING, then the model's own default. */
+    anthropicThinking?: AnthropicThinkingMode;
+    /**
+     * Eval-only: send this text as the whole system prompt instead of the built
+     * rubric, so a candidate rubric can be scored without changing production.
+     */
+    systemPromptOverride?: string;
   } = {}
 ): Promise<{ results: Map<number, AnalysisResult>; model: string; usage: UsageStats }> {
   if (posts.length === 0) throw new Error("analyzeBatch: empty batch");
@@ -859,9 +1018,19 @@ export async function analyzeBatch(
   if (routerTemperature !== undefined && (routerTemperature < 0 || routerTemperature > 2)) {
     throw new Error("ANALYSIS_TEMPERATURE must be between 0 and 2");
   }
+  // Anthropic has no prefill on current models, so its JSON comes from the schema by default.
   const structuredOutput =
-    options.structuredOutput ?? optionalBooleanEnv("ANALYSIS_STRUCTURED_OUTPUT") ?? false;
-  const systemPrompt = buildSystemPrompt(options.excludeBenchmarkIds, promptAppendix);
+    options.structuredOutput ??
+    optionalBooleanEnv("ANALYSIS_STRUCTURED_OUTPUT") ??
+    (provider === "anthropic");
+  const anthropicEffort = parseAnthropicEffort(
+    options.anthropicEffort ?? process.env.ANALYSIS_ANTHROPIC_EFFORT,
+  );
+  const anthropicThinking = parseAnthropicThinking(
+    options.anthropicThinking ?? process.env.ANALYSIS_ANTHROPIC_THINKING,
+  );
+  const systemPrompt =
+    options.systemPromptOverride ?? buildSystemPrompt(options.excludeBenchmarkIds, promptAppendix);
 
   // Build content array with per-post data
   // (Benchmark calibration is in the system prompt, cached by Anthropic)
@@ -923,12 +1092,18 @@ export async function analyzeBatch(
 
   // Call the provider
   const postIds = posts.map(p => p.id);
-  console.log(`[llm] analyzeBatch: ${posts.length} post(s) [${postIds.join(",")}], ${imageCount} screenshot(s), provider=${provider}, model=${model}`);
+  const anthropicInfo = provider === "anthropic"
+    ? `, effort=${anthropicEffort ?? "default"}, thinking=${anthropicThinking ?? "default"}`
+    : "";
+  console.log(`[llm] analyzeBatch: ${posts.length} post(s) [${postIds.join(",")}], ${imageCount} screenshot(s), provider=${provider}, model=${model}${anthropicInfo}`);
 
   let resp: ProviderResponse;
   if (provider === "anthropic") {
-    const prefill = posts.length === 1 ? "{" : '{"results": [{"post_id":';
-    resp = await callAnthropic(systemPrompt, anthropicContent, model, prefill);
+    resp = await callAnthropic(systemPrompt, anthropicContent, model, {
+      responseSchema: structuredOutput ? analysisJsonSchema(posts.length === 1) : undefined,
+      effort: anthropicEffort,
+      thinking: anthropicThinking,
+    });
   } else if (provider === "openrouter") {
     resp = await callOpenRouter(
       systemPrompt,
