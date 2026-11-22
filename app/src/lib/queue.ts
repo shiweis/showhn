@@ -12,6 +12,14 @@ type DB = BetterSQLite3Database<typeof schema>;
 export type TaskType = "screenshot" | "analyze" | "process";
 
 /**
+ * Transactions here read rows and then write them. Started the default way,
+ * such a transaction fails with SQLITE_BUSY_SNAPSHOT ("database is locked")
+ * when another process commits between the read and the write, and SQLite
+ * cannot retry it. Taking the write lock up front makes it wait its turn.
+ */
+const WRITE_LOCK_FIRST = { behavior: "immediate" } as const;
+
+/**
  * Enqueue a new task for a post.
  * Skips if an identical pending/processing task already exists unless force=true.
  */
@@ -113,7 +121,7 @@ export function bulkEnqueue(
         .run();
       count++;
     }
-  });
+  }, WRITE_LOCK_FIRST);
 
   return count;
 }
@@ -140,6 +148,8 @@ export function dequeueTask(
       )
       .orderBy(
         sql`${schema.taskQueue.priority} DESC`,
+        // Untried work first, so a task that keeps failing cannot hold up the queue.
+        sql`${schema.taskQueue.attempts} ASC`,
         sql`${schema.taskQueue.createdAt} ASC`
       )
       .limit(1)
@@ -158,7 +168,7 @@ export function dequeueTask(
       .run();
 
     return { ...task, status: "processing" as const, startedAt: now, attempts: (task.attempts ?? 0) + 1 };
-  });
+  }, WRITE_LOCK_FIRST);
 
   return task;
 }
@@ -185,6 +195,8 @@ export function dequeueBatch(
       )
       .orderBy(
         sql`${schema.taskQueue.priority} DESC`,
+        // Untried work first, so a task that keeps failing cannot hold up the queue.
+        sql`${schema.taskQueue.attempts} ASC`,
         sql`${schema.taskQueue.createdAt} ASC`
       )
       .limit(batchSize)
@@ -212,7 +224,7 @@ export function dequeueBatch(
     }
 
     return claimed;
-  });
+  }, WRITE_LOCK_FIRST);
 }
 
 /**
@@ -258,13 +270,33 @@ export function failTask(db: DB, taskId: number, error: string): void {
 }
 
 /**
+ * Return a claimed task to the queue without it costing an attempt. For
+ * interruptions that say nothing about the task itself: the worker is shutting
+ * down, or the provider is unavailable. A task that is no longer being
+ * processed (already completed or failed) is left alone.
+ */
+export function releaseTask(db: DB, taskId: number, reason: string): void {
+  const safeReason = reason.replace(/\s+/g, " ").slice(0, 2000);
+  db.update(schema.taskQueue)
+    .set({
+      status: "pending",
+      startedAt: null,
+      attempts: sql`max(coalesce(${schema.taskQueue.attempts}, 0) - 1, 0)`,
+      error: safeReason,
+    })
+    .where(and(eq(schema.taskQueue.id, taskId), eq(schema.taskQueue.status, "processing")))
+    .run();
+}
+
+/**
  * Reclaim stale processing tasks (worker crashed).
  * Tasks stuck in "processing" for longer than timeoutSeconds are reset to "pending".
  */
 export function reclaimStaleTasks(db: DB, timeoutSeconds = 300): number {
   const cutoff = Math.floor(Date.now() / 1000) - timeoutSeconds;
 
-  // Increment attempts on reclaim so crash-stuck tasks eventually hit maxAttempts
+  // The dequeue that stranded a task already counted its attempt, so a reclaim
+  // adds none. A task that strands the worker on every attempt still runs out.
   const staleTasks = db
     .select()
     .from(schema.taskQueue)
@@ -278,18 +310,17 @@ export function reclaimStaleTasks(db: DB, timeoutSeconds = 300): number {
 
   let reclaimed = 0;
   for (const task of staleTasks) {
-    const newAttempts = (task.attempts ?? 0) + 1;
+    const attempts = task.attempts ?? 0;
     const maxAttempts = task.maxAttempts ?? 3;
 
-    if (newAttempts >= maxAttempts) {
-      // Exceeded max attempts — mark as failed
+    if (attempts >= maxAttempts) {
       db.update(schema.taskQueue)
         .set({ status: "failed", completedAt: Math.floor(Date.now() / 1000), error: "exceeded max attempts (stale reclaim)" })
         .where(eq(schema.taskQueue.id, task.id))
         .run();
     } else {
       db.update(schema.taskQueue)
-        .set({ status: "pending", startedAt: null, attempts: newAttempts })
+        .set({ status: "pending", startedAt: null })
         .where(eq(schema.taskQueue.id, task.id))
         .run();
     }

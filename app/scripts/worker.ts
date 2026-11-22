@@ -23,6 +23,7 @@ import {
   dequeueBatch,
   completeTask,
   failTask,
+  releaseTask,
   reclaimStaleTasks,
   getQueueStats,
 } from "../src/lib/queue";
@@ -78,6 +79,23 @@ const STATS_INTERVAL = 60_000; // Log stats every 60s
 let running = true;
 let browser: Browser | null = null;
 let providerFailureStreak = 0;
+
+// Tasks this process has claimed and not yet settled. They are handed back on
+// shutdown, so a restart does not strand them until the stale timeout.
+const inFlight = new Set<number>();
+
+/**
+ * A failed judge call counts against a task only when it is the first failure
+ * since the provider last answered. Further failures in the same run say more
+ * about the provider than about the task (an outage, a rejected key, used-up
+ * credits), so the task returns to the queue with its attempt refunded while
+ * the worker keeps probing with backoff. Without this, an outage used up all
+ * three attempts of every queued post within seconds.
+ */
+function settleAfterJudgeFailure(taskId: number, message: string): void {
+  if (providerFailureStreak === 0) failTask(db, taskId, message);
+  else releaseTask(db, taskId, message);
+}
 
 async function backoffAfterProviderFailure(error: unknown): Promise<void> {
   providerFailureStreak++;
@@ -462,21 +480,30 @@ async function workerLoop(): Promise<void> {
   let lastStatsLog = Date.now();
 
   while (running) {
-    // Periodically log stats and reclaim stale tasks
-    if (Date.now() - lastStatsLog > STATS_INTERVAL) {
-      const stale = reclaimStaleTasks(db, STALE_TIMEOUT);
-      if (stale > 0) console.log(`[worker] Reclaimed ${stale} stale tasks`);
+    let tasks: schema.TaskQueue[];
+    try {
+      // Periodically log stats and reclaim stale tasks
+      if (Date.now() - lastStatsLog > STATS_INTERVAL) {
+        const stale = reclaimStaleTasks(db, STALE_TIMEOUT);
+        if (stale > 0) console.log(`[worker] Reclaimed ${stale} stale tasks`);
 
-      const stats = getQueueStats(db);
-      const parts = Object.entries(stats).map(([k, v]) => `${k}=${v}`);
-      if (parts.length > 0) {
-        console.log(`[worker] Queue stats: ${parts.join(", ")}`);
+        const stats = getQueueStats(db);
+        const parts = Object.entries(stats).map(([k, v]) => `${k}=${v}`);
+        if (parts.length > 0) {
+          console.log(`[worker] Queue stats: ${parts.join(", ")}`);
+        }
+        lastStatsLog = Date.now();
       }
-      lastStatsLog = Date.now();
-    }
 
-    // Dequeue a batch of tasks
-    const tasks = dequeueBatch(db, BATCH_SIZE);
+      // Dequeue a batch of tasks
+      tasks = dequeueBatch(db, BATCH_SIZE);
+    } catch (err) {
+      // Another process held the database past the busy timeout. Nothing was
+      // claimed, so wait and try again instead of dying.
+      console.error(`[worker] Queue unavailable (${errorMessage(err)}); retrying in ${POLL_INTERVAL}ms`);
+      await new Promise((r) => setTimeout(r, POLL_INTERVAL));
+      continue;
+    }
 
     if (tasks.length === 0) {
       await new Promise((r) => setTimeout(r, POLL_INTERVAL));
@@ -484,27 +511,32 @@ async function workerLoop(): Promise<void> {
     }
 
     console.log(`[worker] Dequeued ${tasks.length} task(s): ${tasks.map(t => `#${t.id}(${t.type}:${t.postId})`).join(", ")}`);
+    for (const task of tasks) inFlight.add(task.id);
 
-    // Separate screenshot-only tasks from AI tasks
-    const screenshotTasks = tasks.filter(t => t.type === "screenshot");
-    const aiTasks = tasks.filter(t => t.type === "process" || t.type === "analyze");
-    const unknownTasks = tasks.filter(t => t.type !== "screenshot" && t.type !== "process" && t.type !== "analyze");
+    try {
+      // Separate screenshot-only tasks from AI tasks
+      const screenshotTasks = tasks.filter(t => t.type === "screenshot");
+      const aiTasks = tasks.filter(t => t.type === "process" || t.type === "analyze");
+      const unknownTasks = tasks.filter(t => t.type !== "screenshot" && t.type !== "process" && t.type !== "analyze");
 
-    // Handle unknown task types
-    for (const task of unknownTasks) {
-      console.warn(`[worker] Unknown task type: ${task.type}`);
-      failTask(db, task.id, `Unknown task type: ${task.type}`);
-    }
+      // Handle unknown task types
+      for (const task of unknownTasks) {
+        console.warn(`[worker] Unknown task type: ${task.type}`);
+        failTask(db, task.id, `Unknown task type: ${task.type}`);
+      }
 
-    // Process screenshot-only tasks individually (no AI)
-    for (const task of screenshotTasks) {
-      console.log(`[worker] Processing screenshot task #${task.id} for post ${task.postId}`);
-      await processScreenshot(task);
-    }
+      // Process screenshot-only tasks individually (no AI)
+      for (const task of screenshotTasks) {
+        console.log(`[worker] Processing screenshot task #${task.id} for post ${task.postId}`);
+        await processScreenshot(task);
+      }
 
-    // Process AI tasks as a batch
-    if (aiTasks.length > 0) {
-      await processBatch(aiTasks);
+      // Process AI tasks as a batch
+      if (aiTasks.length > 0) {
+        await processBatch(aiTasks);
+      }
+    } finally {
+      for (const task of tasks) inFlight.delete(task.id);
     }
   }
 }
@@ -631,10 +663,13 @@ async function processBatch(tasks: schema.TaskQueue[]): Promise<void> {
       // outages/rate limits into N extra requests. Requeue those as a unit.
       if (!isResponseFormatFailure(err)) {
         const message = errorMessage(err);
-        for (let remainingIndex = si; remainingIndex < subBatches.length; remainingIndex++) {
+        for (const post of subBatch) {
+          settleAfterJudgeFailure(taskMap.get(post.id)!.id, message);
+        }
+        // Posts in later sub-batches were never sent, so they cost no attempt.
+        for (let remainingIndex = si + 1; remainingIndex < subBatches.length; remainingIndex++) {
           for (const post of subBatches[remainingIndex]) {
-            const task = taskMap.get(post.id)!;
-            failTask(db, task.id, message);
+            releaseTask(db, taskMap.get(post.id)!.id, message);
           }
         }
         await backoffAfterProviderFailure(err);
@@ -662,17 +697,20 @@ async function processBatch(tasks: schema.TaskQueue[]): Promise<void> {
           console.log(`  [batch] ✓ Post ${post.id} (fallback): [${result.tier}] ${post.title.slice(0, 50)}`);
         } catch (innerErr) {
           const message = errorMessage(innerErr);
-          failTask(db, task.id, message);
           console.error(`  [batch] ✗ Post ${post.id} (fallback): ${message}`);
 
-          if (!isResponseFormatFailure(innerErr)) {
+          if (isResponseFormatFailure(innerErr)) {
+            failTask(db, task.id, message);
+          } else {
+            settleAfterJudgeFailure(task.id, message);
             // Do not repeat a provider-wide failure for the rest of this batch.
+            // Those posts were never sent, so they cost no attempt.
             for (const skipped of subBatch.slice(postIndex + 1)) {
-              failTask(db, taskMap.get(skipped.id)!.id, message);
+              releaseTask(db, taskMap.get(skipped.id)!.id, message);
             }
             for (let remainingIndex = si + 1; remainingIndex < subBatches.length; remainingIndex++) {
               for (const skipped of subBatches[remainingIndex]) {
-                failTask(db, taskMap.get(skipped.id)!.id, message);
+                releaseTask(db, taskMap.get(skipped.id)!.id, message);
               }
             }
             await backoffAfterProviderFailure(innerErr);
@@ -689,9 +727,26 @@ async function processBatch(tasks: schema.TaskQueue[]): Promise<void> {
 
 // ─── Graceful Shutdown ───────────────────────────────────────────────────────
 
+let shuttingDown = false;
+
 async function shutdown(signal: string): Promise<void> {
+  if (shuttingDown) return;
+  shuttingDown = true;
   console.log(`\n[worker] Received ${signal}, shutting down gracefully...`);
   running = false;
+
+  // Hand unfinished tasks back before anything slow: PM2 kills the process
+  // about 1.6 seconds after the signal, and a judged post takes longer.
+  if (inFlight.size > 0) {
+    try {
+      for (const taskId of inFlight) {
+        releaseTask(db, taskId, `worker shut down (${signal}) before this task finished`);
+      }
+      console.log(`[worker] Returned ${inFlight.size} unfinished task(s) to the queue`);
+    } catch (err) {
+      console.error(`[worker] Could not return unfinished tasks: ${errorMessage(err)}`);
+    }
+  }
 
   if (browser) {
     try {
