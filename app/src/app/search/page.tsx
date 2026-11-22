@@ -1,5 +1,6 @@
 import { PostCard } from "@/components/post-card";
 import { searchPosts, getCategories } from "@/lib/db/queries";
+import { normalizeInteger } from "@/lib/post-filters";
 import Link from "next/link";
 import { SearchInput } from "./search-input";
 import type { Metadata } from "next";
@@ -10,6 +11,8 @@ export const metadata: Metadata = {
   title: "Search",
   description: "Search Show HN projects by keyword, technology, or category.",
 };
+
+const PAGE_SIZE = 48;
 
 const EXAMPLE_SEARCHES = [
   "chess engine",
@@ -29,10 +32,17 @@ export default async function SearchPage({
 }) {
   const params = await searchParams;
   const query = (params.q || "").trim().slice(0, 200);
-  const [results, categories] = await Promise.all([
-    query ? searchPosts(query) : Promise.resolve([]),
+  const page = normalizeInteger(params.page, 1, 1, 10_000);
+  const [search, categories] = await Promise.all([
+    query ? searchPosts(query, { limit: PAGE_SIZE, offset: (page - 1) * PAGE_SIZE }) : Promise.resolve(null),
     !query ? getCategories() : Promise.resolve([]),
   ]);
+  const results = search?.posts ?? [];
+  const total = search?.total ?? 0;
+  const lastPage = Math.max(1, Math.ceil(total / PAGE_SIZE));
+  const pageHref = (target: number) =>
+    `/search?q=${encodeURIComponent(query)}${target > 1 ? `&page=${target}` : ""}`;
+  const count = (value: number) => value.toLocaleString("en-US");
 
   return (
     <>
@@ -50,7 +60,7 @@ export default async function SearchPage({
             <>
               Results for &ldquo;{query}&rdquo;
               <span className="text-muted-foreground font-normal text-base ml-2">
-                ({results.length} found)
+                ({count(total)} found)
               </span>
             </>
           ) : (
@@ -59,9 +69,21 @@ export default async function SearchPage({
         </h1>
 
         <SearchInput defaultValue={query} />
+        {search?.matched === "any" && (
+          <p className="text-sm text-muted-foreground mt-3">
+            No project has all of these words, so these have at least one of them.
+          </p>
+        )}
       </div>
 
-      {query && results.length === 0 ? (
+      {query && total > 0 && results.length === 0 ? (
+        <div className="text-center py-20 text-muted-foreground">
+          <p className="text-lg font-medium">No more results</p>
+          <p className="text-sm mt-1">
+            <Link href={pageHref(1)} className="underline hover:text-foreground">Back to the first page</Link>
+          </p>
+        </div>
+      ) : query && results.length === 0 ? (
         <div className="text-center py-20 text-muted-foreground">
           <svg xmlns="http://www.w3.org/2000/svg" width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" className="mx-auto mb-3 opacity-40"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/></svg>
           <p className="text-lg font-medium">No results found</p>
@@ -72,6 +94,30 @@ export default async function SearchPage({
           {results.map((post) => (
             <PostCard key={post.id} post={post} analysis={post.analysis} />
           ))}
+          {lastPage > 1 && (
+            <nav
+              className="col-span-full flex items-center justify-between gap-4 mt-4 text-sm"
+              aria-label="Search result pages"
+            >
+              {page > 1 ? (
+                <Link href={pageHref(page - 1)} className="px-4 py-2 border border-border rounded-lg hover:bg-muted transition-colors">
+                  Previous
+                </Link>
+              ) : (
+                <span />
+              )}
+              <span className="text-muted-foreground">
+                {count((page - 1) * PAGE_SIZE + 1)}–{count(Math.min(page * PAGE_SIZE, total))} of {count(total)}
+              </span>
+              {page < lastPage ? (
+                <Link href={pageHref(page + 1)} className="px-4 py-2 border border-border rounded-lg hover:bg-muted transition-colors">
+                  Next
+                </Link>
+              ) : (
+                <span />
+              )}
+            </nav>
+          )}
         </div>
       ) : !query ? (
         <div className="max-w-lg mx-auto pt-8 pb-20">

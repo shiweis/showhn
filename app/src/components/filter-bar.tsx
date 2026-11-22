@@ -4,7 +4,14 @@ import { useRouter, useSearchParams } from "next/navigation";
 import { useTransition, useOptimistic, useCallback } from "react";
 import { Badge } from "@/components/ui/badge";
 import { cn } from "@/lib/utils";
-import { normalizeCategories, normalizeSort, normalizeTime } from "@/lib/post-filters";
+import {
+  CATEGORY_FILTER_DEFAULTS,
+  HOME_FILTER_DEFAULTS,
+  filterHref,
+  normalizeCategories,
+  normalizeSort,
+  normalizeTime,
+} from "@/lib/post-filters";
 
 const TIME_TABS = [
   { label: "Today", value: "today" },
@@ -26,30 +33,40 @@ type FilterState = {
   categories: string[];
 };
 
-export function FilterBar({ categories, totalCount }: { categories: string[]; totalCount?: number }) {
+/**
+ * `pageCategory` is set on a category page. There the bar starts from that
+ * page's own defaults, stays on category pages, and treats the chips as a
+ * choice of one category instead of a set to combine.
+ */
+export function FilterBar({
+  categories,
+  totalCount,
+  pageCategory,
+}: {
+  categories: string[];
+  totalCount?: number;
+  pageCategory?: string;
+}) {
   const router = useRouter();
   const searchParams = useSearchParams();
   const [isPending, startTransition] = useTransition();
 
+  const onCategoryPage = pageCategory !== undefined;
+  const defaults = onCategoryPage ? CATEGORY_FILTER_DEFAULTS : HOME_FILTER_DEFAULTS;
   const currentState: FilterState = {
-    time: normalizeTime(searchParams.get("t")),
-    sort: normalizeSort(searchParams.get("sort")),
-    categories: normalizeCategories(searchParams.getAll("cat")),
+    time: normalizeTime(searchParams.get("t"), defaults.time),
+    sort: normalizeSort(searchParams.get("sort"), defaults.sort),
+    categories: onCategoryPage ? [pageCategory] : normalizeCategories(searchParams.getAll("cat")),
   };
 
   const [optimisticState, setOptimisticState] = useOptimistic(currentState);
 
   const navigate = useCallback((newState: FilterState) => {
-    const params = new URLSearchParams();
-    if (newState.time !== "week") params.set("t", newState.time);
-    if (newState.sort !== "newest") params.set("sort", newState.sort);
-    for (const cat of newState.categories) params.append("cat", cat);
-    const qs = params.toString();
     startTransition(() => {
       setOptimisticState(newState);
-      router.push(qs ? `/?${qs}` : "/");
+      router.push(filterHref(newState, onCategoryPage));
     });
-  }, [router, startTransition, setOptimisticState]);
+  }, [router, startTransition, setOptimisticState, onCategoryPage]);
 
   function setTime(value: string) {
     navigate({ ...optimisticState, time: value });
@@ -61,9 +78,11 @@ export function FilterBar({ categories, totalCount }: { categories: string[]; to
 
   function toggleCategory(cat: string) {
     const current = optimisticState.categories;
-    const updated = current.includes(cat)
-      ? current.filter((c) => c !== cat)
-      : [...current, cat];
+    const updated = onCategoryPage
+      ? current.includes(cat) ? [] : [cat]
+      : current.includes(cat)
+        ? current.filter((c) => c !== cat)
+        : [...current, cat];
     navigate({ ...optimisticState, categories: updated });
   }
 

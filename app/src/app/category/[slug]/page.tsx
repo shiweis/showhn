@@ -5,7 +5,7 @@ import { getPosts, getCategories } from "@/lib/db/queries";
 import { notFound } from "next/navigation";
 import type { Metadata } from "next";
 import { JsonLd } from "@/components/json-ld";
-import { normalizeSort, normalizeTime } from "@/lib/post-filters";
+import { CATEGORY_FILTER_DEFAULTS, normalizeSort, normalizeTime } from "@/lib/post-filters";
 
 import { CATEGORY_MAP } from "@/lib/categories";
 
@@ -48,7 +48,7 @@ export async function generateMetadata({ params }: Props): Promise<Metadata> {
     `Browse ${categoryName} projects from Show HN with AI analysis, screenshots, and ratings.`;
 
   return {
-    title: `${categoryName} Projects — HN Showcase`,
+    title: `${categoryName} Projects`,
     description,
     alternates: { canonical: `https://hnshowcase.com/category/${slug}` },
     openGraph: {
@@ -65,8 +65,8 @@ export default async function CategoryPage({ params, searchParams }: Props) {
   if (!categoryName) notFound();
 
   const sp = await searchParams;
-  const time = normalizeTime(sp.t, "all");
-  const sort = normalizeSort(sp.sort, "interesting");
+  const time = normalizeTime(sp.t, CATEGORY_FILTER_DEFAULTS.time);
+  const sort = normalizeSort(sp.sort, CATEGORY_FILTER_DEFAULTS.sort);
 
   const [{ posts, total }, allCategories] = await Promise.all([
     getPosts({ time, sort, categories: [categoryName] }),
@@ -88,7 +88,7 @@ export default async function CategoryPage({ params, searchParams }: Props) {
       </div>
 
       <Suspense fallback={null}>
-        <FilterBar categories={allCategories} totalCount={total} />
+        <FilterBar categories={allCategories} totalCount={total} pageCategory={categoryName} />
       </Suspense>
 
       {posts.length === 0 ? (

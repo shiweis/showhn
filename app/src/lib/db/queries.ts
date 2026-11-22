@@ -1,6 +1,7 @@
 import { db } from "./index";
 import { posts, aiAnalysis } from "./schema";
 import { desc, eq, gte, ne, and, inArray, sql } from "drizzle-orm";
+import { ftsQuery } from "../search-query";
 import type { Post, AiAnalysis } from "./schema";
 import type { PostCardWithAnalysis } from "./card-types";
 import type { SortOption, TimeRange } from "../post-filters";
@@ -189,25 +190,55 @@ export async function getCategories(): Promise<string[]> {
   return results.map((r) => r.category!).sort();
 }
 
+export type SearchResult = {
+  posts: PostCardWithAnalysis[];
+  /** Every matching post, not only the page returned. */
+  total: number;
+  /** "any" when no post had every word and the search fell back to posts with at least one. */
+  matched: "all" | "any";
+};
+
+const NO_RESULTS: SearchResult = { posts: [], total: 0, matched: "all" };
+
 export async function searchPosts(
   query: string,
-  limit = 48
-): Promise<PostCardWithAnalysis[]> {
+  options: { limit?: number; offset?: number } = {},
+): Promise<SearchResult> {
   const normalizedQuery = query.trim().slice(0, 200);
-  if (!normalizedQuery) return [];
+  const { limit = 48, offset = 0 } = options;
   const safeLimit = Number.isFinite(limit) ? Math.max(1, Math.min(Math.floor(limit), 100)) : 48;
+  const safeOffset = Number.isFinite(offset) ? Math.max(0, Math.floor(offset)) : 0;
+
+  let expression = ftsQuery(normalizedQuery, "all");
+  if (!expression) return { ...NO_RESULTS };
 
   // FTS5 search — use raw SQL since Drizzle doesn't support virtual tables
   const { sqlite } = await import("./index");
 
-  // Sanitize FTS5 query: wrap in double quotes to treat as a phrase and
-  // prevent FTS5 syntax operators (*, OR, NOT, NEAR, column filters) from
-  // causing parse errors. Escape any internal double quotes.
-  const sanitized = '"' + normalizedQuery.replace(/"/g, '""') + '"';
-
-  let rows: RawPostCardRow[];
   try {
-    rows = sqlite
+    const countMatches = sqlite
+      .prepare(
+        `SELECT count(*)
+         FROM posts_fts fts
+         JOIN posts p ON p.id = fts.rowid
+         WHERE posts_fts MATCH ? AND p.status != 'dead'`
+      )
+      .pluck();
+
+    let matched: SearchResult["matched"] = "all";
+    let total = countMatches.get(expression) as number;
+    if (total === 0) {
+      // No post has every word. Posts with some of them beat an empty page.
+      const anyWord = ftsQuery(normalizedQuery, "any");
+      if (anyWord && anyWord !== expression) {
+        total = countMatches.get(anyWord) as number;
+        expression = anyWord;
+        matched = "any";
+      }
+    }
+    if (total === 0) return { ...NO_RESULTS };
+
+    const rows = sqlite
       .prepare(
         `SELECT ${RAW_POST_CARD_COLUMNS}
          FROM posts_fts fts
@@ -215,15 +246,23 @@ export async function searchPosts(
          LEFT JOIN ai_analysis a ON p.id = a.post_id
          WHERE posts_fts MATCH ? AND p.status != 'dead'
          ORDER BY rank
-         LIMIT ?`
+         LIMIT ? OFFSET ?`
       )
-      .all(sanitized, safeLimit) as RawPostCardRow[];
+      .all(expression, safeLimit, safeOffset) as RawPostCardRow[];
+
+    return { posts: rows.map(mapRawPostCard), total, matched };
   } catch {
     // FTS5 parse error — return empty results rather than 500
-    return [];
+    return { ...NO_RESULTS };
   }
+}
 
-  return rows.map(mapRawPostCard);
+/** The first day (UTC) that has posts, and today: the days a digest can be shown for. */
+export function getDigestDayRange(): { earliest: string; today: string } {
+  const first = db.select({ at: sql<number | null>`min(${posts.createdAt})` }).from(posts).get();
+  const today = new Date().toISOString().slice(0, 10);
+  const earliest = first?.at ? new Date(first.at * 1000).toISOString().slice(0, 10) : today;
+  return { earliest, today };
 }
 
 export async function getDigest(date?: string): Promise<{

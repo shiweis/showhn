@@ -4,7 +4,7 @@ import Link from "next/link";
 import type { Metadata } from "next";
 
 export const metadata: Metadata = {
-  title: "AI vs HN — HN Showcase",
+  title: "AI vs HN",
   description: "Where our AI and Hacker News disagree: hidden gems the crowd missed, and overhyped posts our AI didn't buy.",
   alternates: { canonical: "https://hnshowcase.com/divergence" },
   openGraph: {

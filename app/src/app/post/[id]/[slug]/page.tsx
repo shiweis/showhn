@@ -55,7 +55,8 @@ export async function generateMetadata({ params }: Props): Promise<Metadata> {
     : "https://hnshowcase.com/og-image.png";
 
   return {
-    title: `${title} — HN Showcase`,
+    // The layout's title template adds the site name.
+    title,
     description,
     alternates: { canonical },
     openGraph: {
@@ -352,7 +353,7 @@ export default async function PostPage({ params }: Props) {
           </div>
           <div className="p-6">
             <div
-              className="prose prose-sm dark:prose-invert max-w-none"
+              className="post-description"
               dangerouslySetInnerHTML={{ __html: sanitizeHtml(post.storyText) }}
             />
           </div>

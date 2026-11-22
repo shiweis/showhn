@@ -7,6 +7,34 @@ import type { PostCardWithAnalysis } from "@/lib/db/card-types";
 
 const PAGE_SIZE = 48;
 
+type LoadedGrid = { posts: PostCardWithAnalysis[]; hasMore: boolean };
+
+/**
+ * What each grid had loaded, by filter, for as long as the tab's page lives.
+ * Opening a post and pressing Back mounts the grid again; with this it comes
+ * back holding the same cards, so the browser can restore the scroll position.
+ * Without it the grid restarted at 48 cards and the visitor lost their place.
+ * A full page load starts with nothing here, so the first render always
+ * matches what the server sent.
+ */
+const loadedByFilter = new Map<string, LoadedGrid>();
+const REMEMBERED_FILTERS = 8;
+
+function remember(key: string, grid: LoadedGrid) {
+  loadedByFilter.delete(key);
+  loadedByFilter.set(key, grid);
+  if (loadedByFilter.size > REMEMBERED_FILTERS) {
+    loadedByFilter.delete(loadedByFilter.keys().next().value!);
+  }
+}
+
+/** The remembered grid, but only while the server's first page still starts it. */
+function startingGrid(key: string, initialPosts: PostCardWithAnalysis[]): LoadedGrid {
+  const loaded = loadedByFilter.get(key);
+  if (loaded && loaded.posts.length > 0 && loaded.posts[0].id === initialPosts[0]?.id) return loaded;
+  return { posts: initialPosts, hasMore: initialPosts.length >= PAGE_SIZE };
+}
+
 export function PostGrid({
   initialPosts,
   time,
@@ -18,20 +46,24 @@ export function PostGrid({
   sort: string;
   categories: string[];
 }) {
-  const [posts, setPosts] = useState(initialPosts);
-  const [hasMore, setHasMore] = useState(initialPosts.length >= PAGE_SIZE);
+  const key = `${time}|${sort}|${categories.join(",")}`;
+  const [grid, setGrid] = useState(() => ({ source: initialPosts, ...startingGrid(key, initialPosts) }));
   const [isPending, startTransition] = useTransition();
   const [loadError, setLoadError] = useState("");
   const sentinelRef = useRef<HTMLDivElement>(null);
   const loadingRef = useRef(false);
 
-  // Reset when filters change (initialPosts changes from server)
-  useEffect(() => {
-    setPosts(initialPosts);
-    setHasMore(initialPosts.length >= PAGE_SIZE);
+  // The server sent a different first page (the filters changed): start over from it.
+  if (grid.source !== initialPosts) {
+    setGrid({ source: initialPosts, ...startingGrid(key, initialPosts) });
     setLoadError("");
-    loadingRef.current = false;
-  }, [initialPosts]);
+  }
+
+  const { posts, hasMore } = grid;
+
+  useEffect(() => {
+    remember(key, { posts, hasMore });
+  }, [key, posts, hasMore]);
 
   const loadMore = useCallback(() => {
     if (loadingRef.current || !hasMore) return;
@@ -47,18 +79,23 @@ export function PostGrid({
           offset: posts.length,
           limit: PAGE_SIZE,
         });
-        setPosts((previous) => {
-          const existing = new Set(previous.map((post) => post.id));
-          return [...previous, ...newPosts.filter((post) => !existing.has(post.id))];
+        setGrid((previous) => {
+          // An answer for filters the visitor has since left.
+          if (previous.source !== initialPosts) return previous;
+          const existing = new Set(previous.posts.map((post) => post.id));
+          return {
+            source: previous.source,
+            posts: [...previous.posts, ...newPosts.filter((post) => !existing.has(post.id))],
+            hasMore: newPosts.length >= PAGE_SIZE,
+          };
         });
-        if (newPosts.length < PAGE_SIZE) setHasMore(false);
       } catch {
         setLoadError("Could not load more projects. Please try again.");
       } finally {
         loadingRef.current = false;
       }
     });
-  }, [hasMore, posts.length, time, sort, categories, startTransition]);
+  }, [hasMore, posts.length, time, sort, categories, startTransition, initialPosts]);
 
   // Intersection observer for auto-loading
   useEffect(() => {

@@ -1,12 +1,14 @@
 import { PostCard } from "@/components/post-card";
 import { Badge } from "@/components/ui/badge";
 import { SubscribeForm } from "@/components/subscribe-form";
-import { getDigest } from "@/lib/db/queries";
+import { getDigest, getDigestDayRange } from "@/lib/db/queries";
+import { resolveDigestDay } from "@/lib/digest-dates";
+import { notFound } from "next/navigation";
 import Link from "next/link";
 import type { Metadata } from "next";
 
 export const metadata: Metadata = {
-  title: "Daily Digest — HN Showcase",
+  title: "Daily Digest",
   description: "Today's best Show HN projects, curated by AI.",
   alternates: { canonical: "https://hnshowcase.com/digest" },
   openGraph: {
@@ -23,7 +25,10 @@ export default async function DigestPage({
   searchParams: Promise<{ [key: string]: string | undefined }>;
 }) {
   const params = await searchParams;
-  const digest = await getDigest(params.date);
+  const { earliest, today } = getDigestDayRange();
+  const day = resolveDigestDay(params.date, earliest, today);
+  if (!day) notFound();
+  const digest = await getDigest(day);
 
   const displayDate = new Date(digest.date + "T00:00:00Z").toLocaleDateString("en-US", {
     weekday: "long",
@@ -36,8 +41,8 @@ export default async function DigestPage({
   const dateObj = new Date(digest.date + "T00:00:00Z");
   const prevDate = new Date(dateObj.getTime() - 86400000).toISOString().split("T")[0];
   const nextDate = new Date(dateObj.getTime() + 86400000).toISOString().split("T")[0];
-  const today = new Date().toISOString().split("T")[0];
   const isToday = digest.date === today;
+  const isEarliest = digest.date === earliest;
 
   const sortedCategories = Object.entries(digest.stats.categories)
     .sort(([, a], [, b]) => b - a);
@@ -59,6 +64,7 @@ export default async function DigestPage({
             <p className="text-muted-foreground mt-1">{displayDate}</p>
           </div>
           <div className="flex items-center gap-1 shrink-0">
+            {!isEarliest && (
             <Link
               href={`/digest?date=${prevDate}`}
               className="p-2 rounded-md hover:bg-muted transition-colors text-muted-foreground hover:text-foreground"
@@ -66,6 +72,7 @@ export default async function DigestPage({
             >
               <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="m15 18-6-6 6-6"/></svg>
             </Link>
+            )}
             {!isToday && (
               <Link
                 href={`/digest?date=${nextDate}`}
