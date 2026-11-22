@@ -22,7 +22,7 @@ import Database from "better-sqlite3";
 import { drizzle } from "drizzle-orm/better-sqlite3";
 import { eq, and, isNull, sql, lte } from "drizzle-orm";
 import * as schema from "../src/lib/db/schema";
-import { bulkEnqueue, getQueueStats, type TaskType } from "../src/lib/queue";
+import { bulkEnqueue, getQueueStats, postIdsWithUnresolvedFailure, type TaskType } from "../src/lib/queue";
 import path from "path";
 import dotenv from "dotenv";
 
@@ -101,18 +101,8 @@ function getPostIdsForAnalyze(flags: Record<string, string | boolean | string[]>
   }
 
   if (flags.failed) {
-    // Re-enqueue failed analyze tasks
-    return db
-      .select({ postId: schema.taskQueue.postId })
-      .from(schema.taskQueue)
-      .where(
-        and(
-          eq(schema.taskQueue.type, "analyze"),
-          eq(schema.taskQueue.status, "failed")
-        )
-      )
-      .all()
-      .map((r) => r.postId);
+    // Text posts whose latest analyze task failed
+    return postIdsWithUnresolvedFailure(db, ["analyze"]);
   }
 
   // Default: text-only posts without any analysis
@@ -183,18 +173,8 @@ function getPostIdsForProcess(flags: Record<string, string | boolean | string[]>
   }
 
   if (flags.failed) {
-    // Re-enqueue failed process/screenshot tasks
-    return db
-      .select({ postId: schema.taskQueue.postId })
-      .from(schema.taskQueue)
-      .where(
-        and(
-          sql`${schema.taskQueue.type} IN ('process', 'screenshot')`,
-          eq(schema.taskQueue.status, "failed")
-        )
-      )
-      .all()
-      .map((r) => r.postId);
+    // Posts whose latest process/screenshot task failed
+    return postIdsWithUnresolvedFailure(db, ["process", "screenshot"]);
   }
 
   // Default: posts with URLs that are missing analysis or new fields

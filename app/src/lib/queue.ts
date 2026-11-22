@@ -227,6 +227,11 @@ export function dequeueBatch(
   }, WRITE_LOCK_FIRST);
 }
 
+/** True when a claimed task will not be retried if this attempt fails. */
+export function isLastAttempt(task: schema.TaskQueue): boolean {
+  return (task.attempts ?? 0) >= (task.maxAttempts ?? 3);
+}
+
 /**
  * Mark a task as completed.
  */
@@ -328,6 +333,30 @@ export function reclaimStaleTasks(db: DB, timeoutSeconds = 300): number {
   }
 
   return reclaimed;
+}
+
+/**
+ * Posts whose most recent task of the given types ended in failure, each once.
+ * A post that failed and was then handled by a later task is not among them,
+ * so retrying "the failed ones" does not redo work that has since succeeded.
+ */
+export function postIdsWithUnresolvedFailure(db: DB, types: TaskType[]): number[] {
+  const typeList = sql.join(types.map((type) => sql`${type}`), sql`, `);
+  const rows = db.all<{ post_id: number }>(sql`
+    SELECT DISTINCT t.post_id
+    FROM task_queue t
+    WHERE t.type IN (${typeList})
+      AND t.status = 'failed'
+      AND NOT EXISTS (
+        SELECT 1 FROM task_queue later
+        WHERE later.post_id = t.post_id
+          AND later.type IN (${typeList})
+          AND later.id > t.id
+          AND later.status != 'failed'
+      )
+    ORDER BY t.post_id
+  `);
+  return rows.map((row) => row.post_id);
 }
 
 /**

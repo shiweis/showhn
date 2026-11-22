@@ -13,6 +13,8 @@ import {
   dequeueTask,
   enqueueTask,
   failTask,
+  isLastAttempt,
+  postIdsWithUnresolvedFailure,
   reclaimStaleTasks,
   releaseTask,
 } from "../src/lib/queue";
@@ -210,6 +212,46 @@ test("releasing leaves a task alone once it has been completed", () => {
 
     assert.equal(sqlite.prepare("SELECT status FROM task_queue").pluck().get(), "completed");
     assert.equal(sqlite.prepare("SELECT attempts FROM task_queue").pluck().get(), 1);
+  } finally {
+    sqlite.close();
+  }
+});
+
+test("only posts whose latest task failed are picked for a retry, each once", () => {
+  const { sqlite, db } = createDatabase();
+  try {
+    const addPost = sqlite.prepare("INSERT INTO posts(id,title,author,created_at,fetched_at,updated_at) VALUES (?,?,'maker',1,1,1)");
+    addPost.run(2, "Failed, then judged on a later task");
+    addPost.run(3, "Never failed");
+    addPost.run(4, "Failed as a text-only post");
+    const addTask = sqlite.prepare("INSERT INTO task_queue(type,post_id,status,attempts,created_at) VALUES (?,?,?,3,1)");
+    addTask.run("process", 1, "failed");
+    addTask.run("process", 1, "failed"); // failed twice: still one post
+    addTask.run("process", 2, "failed");
+    addTask.run("process", 2, "completed"); // a later task succeeded
+    addTask.run("process", 3, "completed");
+    addTask.run("analyze", 4, "failed");
+
+    assert.deepEqual(postIdsWithUnresolvedFailure(db, ["process", "screenshot"]), [1]);
+    assert.deepEqual(postIdsWithUnresolvedFailure(db, ["analyze"]), [4]);
+  } finally {
+    sqlite.close();
+  }
+});
+
+test("a task is on its last attempt once it has been claimed as often as it may be tried", () => {
+  const { sqlite, db } = createDatabase();
+  try {
+    enqueueTask(db, "process", 1);
+    const seen: boolean[] = [];
+    for (let attempt = 1; attempt <= 3; attempt++) {
+      const task = dequeueTask(db)!;
+      seen.push(isLastAttempt(task));
+      failTask(db, task.id, "page did not load");
+    }
+
+    assert.deepEqual(seen, [false, false, true]);
+    assert.equal(sqlite.prepare("SELECT status FROM task_queue").pluck().get(), "failed");
   } finally {
     sqlite.close();
   }

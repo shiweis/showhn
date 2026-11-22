@@ -4,6 +4,7 @@
  */
 
 import { fetchPublicResource } from "./public-url";
+import { stripGitHubChrome } from "./page-text";
 
 const MAX_RESPONSE_SIZE = 5 * 1024 * 1024; // 5MB max
 
@@ -28,13 +29,15 @@ export async function fetchPageContent(url: string): Promise<string> {
 
     const html = new TextDecoder().decode(res.body);
 
-    return html
+    const text = html
       .replace(/<script[^>]*>[\s\S]*?<\/script>/gi, "")
       .replace(/<style[^>]*>[\s\S]*?<\/style>/gi, "")
       .replace(/<[^>]+>/g, " ")
       .replace(/\s+/g, " ")
-      .trim()
-      .slice(0, 5000);
+      .trim();
+
+    // Drop GitHub's navigation menu before the cut, so the stored text is the repository's own.
+    return stripGitHubChrome(text).slice(0, 5000);
   } catch {
     return "";
   }

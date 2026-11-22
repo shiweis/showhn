@@ -23,6 +23,7 @@ import {
   dequeueBatch,
   completeTask,
   failTask,
+  isLastAttempt,
   releaseTask,
   reclaimStaleTasks,
   getQueueStats,
@@ -339,6 +340,14 @@ async function fetchProcessContent(
     }
   } finally {
     await context.close();
+  }
+
+  // Nothing could be fetched at all. Judged on its title alone a post rates lower
+  // than it deserves and was never looked at again. Most such failures are sites
+  // that are down, and some come back (3 of 10 loaded on a second try in a spot
+  // check), so retry instead. Only the last attempt goes ahead with what there is.
+  if (!pageText && !screenshotSuccess && !isLastAttempt(task)) {
+    throw new Error(`Could not load ${post.url}; will retry`);
   }
 
   // Update screenshot status + store page content

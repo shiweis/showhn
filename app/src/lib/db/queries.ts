@@ -466,7 +466,8 @@ export async function getPost(id: number): Promise<(Post & { analysis: AiAnalysi
     .select()
     .from(posts)
     .leftJoin(aiAnalysis, eq(posts.id, aiAnalysis.postId))
-    .where(eq(posts.id, id))
+    // A post that is dead or deleted on HN is off the site everywhere, its own page included.
+    .where(and(eq(posts.id, id), ne(posts.status, "dead")))
     .get();
 
   if (!result) return null;

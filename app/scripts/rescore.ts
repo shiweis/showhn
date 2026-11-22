@@ -13,7 +13,7 @@
 
 import Database from "better-sqlite3";
 import { analyzeBatch, buildBatches, tierToPickScore, TIERS, type BatchPost } from "../src/lib/ai/llm";
-import { loadScreenshot } from "./lib/screenshot-files";
+import { hasScreenshot, loadScreenshot } from "./lib/screenshot-files";
 import path from "path";
 import dotenv from "dotenv";
 
@@ -58,6 +58,11 @@ function parseArgs() {
   return flags;
 }
 
+// Posts judged per call, as in the worker.
+const BATCH_SIZE = parseInt(process.env.BATCH_SIZE || "5", 10);
+// Marks a post whose screenshot will be loaded when its batch is sent.
+const SCREENSHOT_PENDING = "pending";
+
 // Per-worker rate limit: delay between batch calls
 const WORKER_DELAY = parseInt(process.env.RESCORE_DELAY || "1000", 10);
 
@@ -95,7 +100,11 @@ async function main() {
 
   const posts = sqlite.prepare(query).all(...params) as PostRow[];
 
-  // Build all BatchPost objects upfront, then dynamically size batches
+  // Build all BatchPost objects upfront, then dynamically size batches.
+  // Screenshots are loaded one batch at a time, right before the call: loading
+  // every thumbnail here held about 0.6 GB for the full set, on a box with a
+  // history of out-of-memory kills. A stand-in tells the token estimate that
+  // sizes the batches which posts will carry an image.
   const allBatchPosts: BatchPost[] = posts.map(post => ({
     id: post.id,
     title: post.title,
@@ -105,10 +114,11 @@ async function main() {
       || post.title,
     storyText: post.story_text,
     readmeContent: post.readme_content || undefined,
-    screenshotBase64: loadScreenshot(post.id),
+    screenshotBase64: hasScreenshot(post.id) ? SCREENSHOT_PENDING : undefined,
   }));
 
-  const batches = buildBatches(allBatchPosts);
+  // The same posts-per-call as the worker, so a rescore judges the way production does.
+  const batches = buildBatches(allBatchPosts, undefined, BATCH_SIZE);
   const batchSizes = batches.map(b => b.length);
 
   console.log(`[rescore] ${posts.length} posts in ${batches.length} dynamic batches [${batchSizes.join(",")}], ${flags.concurrency} worker(s)`);
@@ -125,7 +135,10 @@ async function main() {
   async function worker() {
     while (batchIdx < batches.length) {
       const currentBatchIdx = batchIdx++;
-      const batchInput = batches[currentBatchIdx];
+      const batchInput = batches[currentBatchIdx].map((post) => ({
+        ...post,
+        screenshotBase64: post.screenshotBase64 ? loadScreenshot(post.id) : undefined,
+      }));
       const batchLabel = `[batch ${currentBatchIdx + 1}/${batches.length}]`;
 
       try {

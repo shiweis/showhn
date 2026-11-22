@@ -1,49 +1,43 @@
 /**
  * HN API clients for data refresh.
  *
- * - fetchItem: Single item via HN Firebase API (for on-demand refresh)
+ * - fetchItemState: Single item via HN Firebase API (on-demand refresh, and posts the search no longer returns)
  * - fetchItemsBatched: Multiple items via Algolia objectID filter (for cron refresh)
  */
 
 const HN_FIREBASE_BASE = "https://hacker-news.firebaseio.com/v0";
 const ALGOLIA_SEARCH_BASE = "https://hn.algolia.com/api/v1/search";
 
-export interface HNItem {
-  id: number;
-  score: number;
-  descendants: number; // comment count
-  dead?: boolean;
-  deleted?: boolean;
+/**
+ * What HN itself says about one item. "dead" means killed by flags or
+ * moderators, "deleted" means removed by its author. "unknown" means the
+ * lookup failed or came back empty: it never means the item is gone.
+ */
+export type HNItemState =
+  | { state: "live"; score: number; descendants: number }
+  | { state: "dead" | "deleted" | "unknown" };
+
+/** Look up one item on the HN Firebase API. */
+export async function fetchItemState(id: number): Promise<HNItemState> {
+  try {
+    const res = await fetch(`${HN_FIREBASE_BASE}/item/${id}.json`, {
+      signal: AbortSignal.timeout(3000),
+    });
+    if (!res.ok) return { state: "unknown" };
+    const data = await res.json();
+    if (!data) return { state: "unknown" };
+    if (data.deleted) return { state: "deleted" };
+    if (data.dead) return { state: "dead" };
+    return { state: "live", score: data.score ?? 0, descendants: data.descendants ?? 0 };
+  } catch {
+    return { state: "unknown" };
+  }
 }
 
 export interface AlgoliaRefreshHit {
   objectID: string;
   points: number;
   num_comments: number;
-}
-
-/**
- * Fetch a single item from HN Firebase API.
- * Used by on-demand refresh (single post detail view).
- */
-export async function fetchItem(id: number): Promise<HNItem | null> {
-  try {
-    const res = await fetch(`${HN_FIREBASE_BASE}/item/${id}.json`, {
-      signal: AbortSignal.timeout(3000),
-    });
-    if (!res.ok) return null;
-    const data = await res.json();
-    if (!data || data.deleted || data.dead) return null;
-    return {
-      id: data.id,
-      score: data.score ?? 0,
-      descendants: data.descendants ?? 0,
-      dead: data.dead,
-      deleted: data.deleted,
-    };
-  } catch {
-    return null;
-  }
 }
 
 /**
