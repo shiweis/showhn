@@ -55,6 +55,28 @@ test("Anthropic judge request ends on the user turn, with the rubric as a system
   assert.equal(request.model, "claude-haiku-5-5");
 });
 
+test("Anthropic judge request replaces half of a surrogate pair, which the API rejects as invalid JSON", () => {
+  // Page text is cut at a fixed length. A cut through an emoji leaves its first half behind.
+  const cutMidEmoji = ("a".repeat(2999) + "📱 Get the app").slice(0, 3000);
+  assert.equal(cutMidEmoji.isWellFormed(), false);
+
+  const request = buildAnthropicRequest({
+    systemPrompt: "rubric \ud83d",
+    content: [
+      { type: "text", text: `Page content (truncated):\n${cutMidEmoji}\n</project_evidence>` },
+      { type: "text", text: "A whole emoji is kept: 📱" },
+    ],
+    model: "claude-haiku-5-5",
+  });
+
+  // JSON.stringify writes a lone half as a \ud83d-style escape. The API answers that with
+  // 400 "The request body is not valid JSON: unexpected end of hex escape".
+  assert.doesNotMatch(JSON.stringify(request), /\\ud[89a-f][0-9a-f]{2}/i);
+  const [pageText, emojiText] = request.messages[0].content as Anthropic.Messages.TextBlockParam[];
+  assert.equal(pageText.text, `Page content (truncated):\n${"a".repeat(2999)}�\n</project_evidence>`);
+  assert.equal(emojiText.text, "A whole emoji is kept: 📱");
+});
+
 test("Anthropic judge request constrains output with the schema, minus the length keywords the API rejects", () => {
   const request = buildAnthropicRequest({
     systemPrompt: "rubric",

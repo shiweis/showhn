@@ -504,6 +504,18 @@ function toAnthropicJsonSchema(schema: unknown): unknown {
 }
 
 /**
+ * The API rejects a request whose text holds half of a surrogate pair, with
+ * 400 "The request body is not valid JSON: unexpected end of hex escape".
+ * Scraped page text is cut at a fixed length, which can split an emoji, so
+ * replace any lone half with U+FFFD before sending.
+ */
+function withWellFormedText(
+  block: Anthropic.Messages.ContentBlockParam,
+): Anthropic.Messages.ContentBlockParam {
+  return block.type === "text" ? { ...block, text: block.text.toWellFormed() } : block;
+}
+
+/**
  * Build the Messages API request for one judging call.
  *
  * Current Claude models reject a trailing assistant prefill, so JSON output is
@@ -537,9 +549,13 @@ export function buildAnthropicRequest(input: {
     // One-hour lifetime: posts arrive in half-hourly ingest runs, and the default
     // 5-minute entry would expire between them. A one-hour write is billed at 2x input.
     system: [
-      { type: "text", text: input.systemPrompt, cache_control: { type: "ephemeral", ttl: "1h" } },
+      {
+        type: "text",
+        text: input.systemPrompt.toWellFormed(),
+        cache_control: { type: "ephemeral", ttl: "1h" },
+      },
     ],
-    messages: [{ role: "user", content: input.content }],
+    messages: [{ role: "user", content: input.content.map(withWellFormedText) }],
     ...(input.thinking ? { thinking: { type: input.thinking } } : {}),
     ...(Object.keys(outputConfig).length > 0 ? { output_config: outputConfig } : {}),
   };
