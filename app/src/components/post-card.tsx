@@ -2,7 +2,7 @@ import { Badge } from "@/components/ui/badge";
 import Image from "next/image";
 import Link from "next/link";
 import type { AnalysisCardData, PostCardData } from "@/lib/db/card-types";
-import { TIERS, TIER_LABELS, TIER_DOTS, type Tier, getVibeTagColor } from "@/lib/ai/llm";
+import { TIERS, TIER_LABELS, TIER_DOTS, type Tier, getVibeTagColor } from "@/lib/ai/tiers";
 import { categoryToSlug } from "@/lib/categories";
 
 function safeParseTier(value: string | null | undefined): Tier | null {

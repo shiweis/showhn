@@ -1,0 +1,1 @@
+CREATE INDEX `idx_posts_comments` ON `posts` (`comments`);

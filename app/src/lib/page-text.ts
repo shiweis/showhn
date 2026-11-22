@@ -20,3 +20,13 @@ export function stripGitHubChrome(pageText: string): string {
   if (end < 0) return pageText;
   return pageText.slice(0, start) + pageText.slice(end + GITHUB_NAV_END.length).trimStart();
 }
+
+/**
+ * The judge is told that everything between <project_evidence> tags is
+ * untrusted. Text scraped from a project could contain the closing tag and
+ * carry on as if it were instructions, so those tags are rewritten in square
+ * brackets. The words themselves stay: they are evidence too.
+ */
+export function defuseEvidenceTags(text: string): string {
+  return text.replace(/<\s*(\/?)\s*project_evidence\s*>/gi, "[$1project_evidence]");
+}

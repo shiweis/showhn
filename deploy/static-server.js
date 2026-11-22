@@ -1,11 +1,12 @@
 /**
  * Lightweight static file server for screenshots.
  * Serves /screenshots/* from app/public/screenshots/
- * Runs behind Traefik — not exposed externally.
+ * Runs behind Caddy — not exposed externally.
  */
 const http = require("http");
 const fs = require("fs");
 const path = require("path");
+const { cacheValidators, isNotModified } = require("./screenshot-cache");
 
 const PORT = parseInt(process.env.STATIC_PORT || "3334", 10);
 const SCREENSHOTS_DIR = path.resolve(__dirname, "../app/public/screenshots");
@@ -51,11 +52,20 @@ const server = http.createServer((req, res) => {
       return;
     }
 
-    res.writeHead(200, {
+    const validators = cacheValidators(stats);
+    const headers = {
       "Content-Type": contentType,
-      "Content-Length": stats.size,
       "Cache-Control": "public, max-age=86400, stale-while-revalidate=604800",
-    });
+      ETag: validators.etag,
+      "Last-Modified": validators.lastModified,
+    };
+    if (isNotModified(req.headers, validators)) {
+      res.writeHead(304, headers);
+      res.end();
+      return;
+    }
+
+    res.writeHead(200, { ...headers, "Content-Length": stats.size });
     if (req.method === "HEAD") {
       res.end();
       return;

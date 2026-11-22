@@ -4,7 +4,7 @@ import { triggerRefreshIfStale, triggerGitHubRefreshIfStale } from "@/lib/refres
 import { sanitizeHtml } from "@/lib/sanitize";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { TIERS, TIER_LABELS, TIER_DOTS, type Tier, getVibeTagColor } from "@/lib/ai/llm";
+import { TIERS, TIER_LABELS, TIER_DOTS, type Tier, getVibeTagColor } from "@/lib/ai/tiers";
 
 function safeParseTier(value: string | null | undefined): Tier | null {
   if (!value) return null;

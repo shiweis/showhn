@@ -25,6 +25,8 @@ export const posts = sqliteTable(
   (table) => [
     index("idx_posts_created").on(table.createdAt),
     index("idx_posts_points").on(table.points),
+    // "Most Discussed" sorts on this; without it the all-time view scanned every post (136 ms vs 0.2 ms).
+    index("idx_posts_comments").on(table.comments),
     index("idx_posts_status").on(table.status),
   ]
 );

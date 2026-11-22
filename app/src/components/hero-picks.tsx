@@ -1,7 +1,7 @@
 import Image from "next/image";
 import Link from "next/link";
 import type { PostCardWithAnalysis } from "@/lib/db/card-types";
-import { TIER_LABELS, TIER_DOTS, type Tier, getVibeTagColor } from "@/lib/ai/llm";
+import { TIER_LABELS, TIER_DOTS, type Tier, getVibeTagColor } from "@/lib/ai/tiers";
 
 function safeParseTier(value: string | null | undefined): Tier | null {
   if (!value) return null;
