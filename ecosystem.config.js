@@ -61,6 +61,12 @@ module.exports = {
       env: {
         NODE_ENV: "production",
       },
+      // PM2 writes the date, time and UTC offset in front of every line the
+      // worker logs; the worker prints no times of its own. PM2 stamps each
+      // chunk it reads and drops the start of a line cut by a chunk boundary:
+      // seen when a test app wrote hundreds of KB in one go, never with lines
+      // written one at a time. Keep the worker's log lines short.
+      log_date_format: "YYYY-MM-DDTHH:mm:ssZ",
       // Worker is long-running; restart with exponential backoff if it dies
       max_restarts: 10,
       min_uptime: "30s",
