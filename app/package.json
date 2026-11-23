@@ -16,7 +16,8 @@
     "db:baseline": "tsx scripts/baseline-migrations.ts",
     "worker": "tsx scripts/worker.ts",
     "ingest": "tsx scripts/ingest.ts",
-    "requeue": "tsx scripts/requeue.ts"
+    "requeue": "tsx scripts/requeue.ts",
+    "health": "tsx scripts/health-check.ts"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.74.0",

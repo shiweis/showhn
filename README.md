@@ -77,6 +77,7 @@ The app runs on port 3000 by default. Override with `PORT=3333 npm run dev`.
 | `scripts/backfill-content-playwright.ts` | Playwright-based backfill for JS-rendered sites. |
 | `scripts/backfill-thumbnails.ts` | Generate thumbnail images from full screenshots. |
 | `scripts/setup-fts.ts` | Rebuild the FTS5 search index. Run after ingestion. |
+| `scripts/health-check.ts` | Report whether new posts are arriving and getting verdicts. Runs from cron; see [Production Deployment](#production-deployment). |
 | `scripts/baseline-migrations.ts` | Adopt migration tracking for a pre-migration database after making a backup. Requires `--yes`. |
 | `scripts/analytics.sh` | Pull Umami analytics from CLI. Usage: `./scripts/analytics.sh [site] [period]`. Sites: `all`, `hn`, `shiwei`, `everglades`, `burin`. Periods: `today`, `24h`, `7d`, `30d`. |
 | `scripts/analyze-stopwords.sh` | Corpus analysis for FTS stopwords. Finds terms appearing in 15+ of 16 categories. Run every few months to update the stopword list in `queries.ts` as the corpus grows. |
@@ -99,6 +100,7 @@ See [`.env.example`](app/.env.example) for all available options:
 | `SCREENSHOT_TIMEOUT` | `15000` | Screenshot timeout in ms |
 | `GITHUB_TOKEN` | — | GitHub API token (optional, raises rate limit from 60 to 5000 req/hr) |
 | `REMOVED_POST_IDS` | — | HN post ids removed at their author's request, comma-separated; ingest skips them. Set in `.env.local` only |
+| `HEALTH_PING_URL` | — | Where the health check reports: the ping address of a Healthchecks.io check or a compatible service. Set in `.env.local` only |
 
 ### Existing databases
 
@@ -123,6 +125,8 @@ The site listens on `127.0.0.1` only; a reverse proxy ([`deploy/Caddyfile`](depl
 Uses the path-portable root [`ecosystem.config.js`](ecosystem.config.js) for PM2. The compatibility file under [`deploy/`](deploy/) re-exports that canonical configuration. Production should run the screenshot worker as an unprivileged user and deny private/link-local destinations at the worker network boundary in addition to the application URL guard.
 
 PM2 keeps each process's output in `~/.pm2/logs/`, and the cron script appends to `logs/` in the repository root. PM2 writes the date, time and UTC offset in front of every worker line (`log_date_format` in the PM2 configuration). [`deploy/logrotate.conf`](deploy/logrotate.conf) rotates all of these logs once a month, or sooner when one passes 50 MB, and keeps 12 compressed copies; its first lines say how to install it.
+
+Nothing in PM2 or on the site shows when ingest or analysis stops, so `deploy/cron.sh health` checks every half hour and writes one line to `logs/health.log`. It reports a problem when at least 8 of the 10 newest posts older than two hours have no verdict, or when no new post has arrived for six hours. To get an email, create a check at [Healthchecks.io](https://healthchecks.io) or a compatible service, with a period of 30 minutes and a grace time of 1 hour, and put its ping address in `HEALTH_PING_URL`. The service then mails you when the check reports a problem and when the reports stop coming, which also covers the server being down.
 
 ## Project Structure
 
