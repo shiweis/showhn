@@ -1,8 +1,8 @@
 // PM2 process configuration for HN Showcase.
 //
 // Defines the three processes that run the site:
-//   - hn-showcase  — Next.js production server on :3333 (cluster mode)
-//   - hn-static    — static file server for /screenshots/* on :3334 (cluster mode)
+//   - hn-showcase  — Next.js production server on 127.0.0.1:3333 (cluster mode)
+//   - hn-static    — static file server for /screenshots/* on 127.0.0.1:3334 (cluster mode)
 //   - hn-worker    — long-running task-queue worker (fork mode)
 //
 // Path-portable: all paths are resolved relative to this file's location, so
@@ -40,14 +40,16 @@ module.exports = {
     {
       name: "hn-showcase",
       script: "./node_modules/.bin/next",
-      args: "start",
+      // Listens on this machine only; the reverse proxy is the one way in.
+      // `next start` takes its address from --hostname alone and ignores a
+      // HOSTNAME variable: without the flag it listens on every address.
+      args: "start --hostname 127.0.0.1",
       cwd: appDir,
       exec_mode: "cluster",
       instances: 1,
       env: {
         NODE_ENV: "production",
         PORT: "3333",
-        HOSTNAME: "0.0.0.0",
       },
     },
     {

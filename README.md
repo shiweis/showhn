@@ -115,8 +115,10 @@ HTML routes render dynamically because the strict Content Security Policy uses a
 ```bash
 cd app
 npm run build
-PORT=3333 npm start
+PORT=3333 npm start -- --hostname 127.0.0.1
 ```
+
+The site listens on `127.0.0.1` only; a reverse proxy ([`deploy/Caddyfile`](deploy/Caddyfile)) is the one way in. `next start` takes its address from `--hostname` and ignores a `HOSTNAME` variable, so without the flag it listens on every address.
 
 Uses the path-portable root [`ecosystem.config.js`](ecosystem.config.js) for PM2. The compatibility file under [`deploy/`](deploy/) re-exports that canonical configuration. Production should run the screenshot worker as an unprivileged user and deny private/link-local destinations at the worker network boundary in addition to the application URL guard.
 
