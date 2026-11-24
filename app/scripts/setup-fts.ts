@@ -7,6 +7,7 @@
 import Database from "better-sqlite3";
 import path from "path";
 import dotenv from "dotenv";
+import { FTS_SUMMARY_SQL } from "../src/lib/db/fts";
 
 dotenv.config({ path: path.join(process.cwd(), ".env.local"), override: false });
 
@@ -28,7 +29,7 @@ db.exec(`
 // Populate from posts + ai_analysis
 const posts = db
   .prepare(`
-    SELECT p.id, p.title, a.summary
+    SELECT p.id, p.title, ${FTS_SUMMARY_SQL} AS summary
     FROM posts p
     LEFT JOIN ai_analysis a ON p.id = a.post_id
   `)

@@ -38,6 +38,7 @@ function createDatabase(file = ":memory:", options: Database.Options = {}) {
       summary TEXT,
       analyzed_at INTEGER NOT NULL,
       model TEXT NOT NULL,
+      similar_to TEXT,
       FOREIGN KEY (post_id) REFERENCES posts(id)
     );
     CREATE TABLE task_queue (

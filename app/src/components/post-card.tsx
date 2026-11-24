@@ -4,6 +4,7 @@ import Link from "next/link";
 import type { AnalysisCardData, PostCardData } from "@/lib/db/card-types";
 import { TIERS, TIER_LABELS, TIER_DOTS, type Tier, getVibeTagColor } from "@/lib/ai/tiers";
 import { categoryToSlug } from "@/lib/categories";
+import { displayDomain } from "@/lib/display-domain";
 
 function safeParseTier(value: string | null | undefined): Tier | null {
   if (!value) return null;
@@ -105,6 +106,8 @@ export function PostCard({
   const slug = slugify(post.title);
   const href = `/post/${post.id}/${slug}`;
   const displayTitle = post.title.replace(/^Show HN:\s*/i, "");
+  const domain = displayDomain(post.url);
+  const hnUrl = `https://news.ycombinator.com/item?id=${post.id}`;
 
   const tier = safeParseTier(analysis?.tier);
   const tierStyle = getTierStyle(tier);
@@ -201,6 +204,20 @@ export function PostCard({
               </span>
             </div>
           )}
+          {domain && post.url && (
+            <div className="absolute bottom-2 left-2 z-10 max-w-[calc(100%-1rem)]">
+              <a
+                href={post.url}
+                target="_blank"
+                rel="noopener noreferrer"
+                title={`Open ${domain} in a new tab`}
+                className="relative z-10 inline-flex max-w-full items-center gap-1 rounded-full border border-border/50 bg-background/85 px-2 py-0.5 text-[10px] font-medium text-foreground/80 shadow-sm backdrop-blur-sm transition-colors hover:bg-background hover:text-primary"
+              >
+                <span className="truncate">{domain}</span>
+                <svg xmlns="http://www.w3.org/2000/svg" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" className="shrink-0" aria-hidden="true"><path d="M15 3h6v6"/><path d="M10 14 21 3"/><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/></svg>
+              </a>
+            </div>
+          )}
         </div>
 
         {/* Content */}
@@ -239,14 +256,22 @@ export function PostCard({
           <div className="flex items-center justify-between text-[11px] text-muted-foreground">
             <span className="font-medium truncate mr-2">{post.author}</span>
             <div className="flex items-center gap-2.5 shrink-0">
-              <span className="inline-flex items-center gap-0.5 text-primary/70">
-                <svg xmlns="http://www.w3.org/2000/svg" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="m18 15-6-6-6 6"/></svg>
-                {post.points}
-              </span>
-              <span className="inline-flex items-center gap-0.5">
-                <svg xmlns="http://www.w3.org/2000/svg" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M7.9 20A9 9 0 1 0 4 16.1L2 22Z"/></svg>
-                {post.comments}
-              </span>
+              <a
+                href={hnUrl}
+                target="_blank"
+                rel="noopener noreferrer"
+                title="Open the Hacker News thread"
+                className="relative z-10 -my-2 inline-flex items-center gap-2.5 rounded-sm py-2 hover:text-foreground"
+              >
+                <span className="inline-flex items-center gap-0.5 text-primary/70">
+                  <svg xmlns="http://www.w3.org/2000/svg" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="m18 15-6-6-6 6"/></svg>
+                  {post.points}
+                </span>
+                <span className="inline-flex items-center gap-0.5">
+                  <svg xmlns="http://www.w3.org/2000/svg" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M7.9 20A9 9 0 1 0 4 16.1L2 22Z"/></svg>
+                  {post.comments}
+                </span>
+              </a>
               {/* Rendered from the clock: the browser's text can differ from the server's without it being an error. */}
               <span suppressHydrationWarning>{timeAgo(post.createdAt)}</span>
             </div>

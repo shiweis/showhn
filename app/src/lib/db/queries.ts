@@ -204,6 +204,26 @@ export function getPostsCached(
   return allTimeLists.get(key, () => getPosts(options));
 }
 
+const feedPosts = createShortCache({ ttlMs: ALL_TIME_LIST_TTL_MS, maxEntries: 4 });
+
+/** The newest posts rated gem or banger that are still live, for the feed. Reused for a few minutes. */
+export function getFeedPosts(limit = 50): Promise<PostCardWithAnalysis[]> {
+  return feedPosts.get(String(limit), async () => {
+    const { sqlite } = await import("./index");
+    const rows = sqlite
+      .prepare(
+        `SELECT ${RAW_POST_CARD_COLUMNS}
+         FROM posts p
+         JOIN ai_analysis a ON p.id = a.post_id
+         WHERE p.status != 'dead' AND a.tier IN ('gem', 'banger')
+         ORDER BY p.created_at DESC
+         LIMIT ?`,
+      )
+      .all(limit) as RawPostCardRow[];
+    return rows.map(mapRawPostCard);
+  });
+}
+
 export async function getCategories(): Promise<string[]> {
   const results = db
     .selectDistinct({ category: aiAnalysis.category })

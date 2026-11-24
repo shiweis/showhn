@@ -10,8 +10,9 @@ An AI-powered visual gallery for [Show HN](https://news.ycombinator.com/showhn.h
 - **GitHub-aware** — GitHub repos get metadata cards (stars, language, description) instead of generic screenshots, with on-demand refresh via the GitHub API
 - **AI analysis** — Each project gets a tier (gem/banger/solid/mid/pass), vibe tags, highlight, and strengths/weaknesses via LLM. Benchmark-calibrated against real posts, batched (up to 5 posts/call), and records provider-reported cache usage and billed cost
 - **Similar projects** — FTS5-powered related project recommendations on every post page, using corpus-analyzed stopwords for relevance
-- **Full-text search** — SQLite FTS5 search across titles and AI summaries
+- **Full-text search** — SQLite FTS5 search across titles, AI summaries and the names of the products each project is compared to
 - **Daily digest** — Curated view of each day's best projects
+- **RSS feed** — The newest gems and bangers at `/feed.xml`
 - **AI vs HN** — Divergence page showing where AI ratings and HN crowd votes disagree
 - **Filtering** — By time range, category, points, comments, or AI pick score
 - **Dark mode** — System-aware with manual toggle

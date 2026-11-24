@@ -1,6 +1,6 @@
 import { PostCard } from "@/components/post-card";
 import { Badge } from "@/components/ui/badge";
-import { SubscribeForm } from "@/components/subscribe-form";
+import { FeedBox } from "@/components/feed-box";
 import { getDigest, getDigestDayRange } from "@/lib/db/queries";
 import { resolveDigestDay } from "@/lib/digest-dates";
 import { notFound } from "next/navigation";
@@ -139,9 +139,9 @@ export default async function DigestPage({
         </>
       )}
 
-      {/* Subscribe */}
+      {/* Feed */}
       <div className="mt-12">
-        <SubscribeForm />
+        <FeedBox />
       </div>
     </>
   );

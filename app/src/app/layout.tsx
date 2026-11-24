@@ -61,6 +61,7 @@ export default async function RootLayout({
   return (
     <html lang="en" suppressHydrationWarning>
       <head>
+        <link rel="alternate" type="application/rss+xml" title="HN Showcase: top picks" href="/feed.xml" />
         <script
           nonce={nonce}
           defer
@@ -108,6 +109,9 @@ export default async function RootLayout({
               <div className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8 py-4 flex items-center justify-between text-xs text-muted-foreground">
                 <span>HN Showcase — AI-powered gallery for Show HN</span>
                 <div className="flex items-center gap-4">
+                  <a href="/feed.xml" className="hover:text-primary transition-colors">
+                    RSS
+                  </a>
                   <Link
                     href="/about"
                     className="hover:text-primary transition-colors"

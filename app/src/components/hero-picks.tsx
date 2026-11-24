@@ -55,7 +55,14 @@ export function HeroPicks({ posts }: { posts: PostCardWithAnalysis[] }) {
         </Link>
       </div>
 
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+      {/* Phones: three short rows, so the list below starts on the first screen. */}
+      <div className="sm:hidden rounded-lg border border-border bg-card shadow-sm divide-y divide-border overflow-hidden">
+        {posts.map((post) => (
+          <PhonePick key={post.id} post={post} />
+        ))}
+      </div>
+
+      <div className="hidden sm:grid grid-cols-1 lg:grid-cols-3 gap-4">
         {/* Featured (large) card */}
         <div className="lg:col-span-2 relative group">
           <Link href={featuredHref} prefetch={false}>
@@ -180,6 +187,35 @@ function SidePickCard({ post }: { post: PostCardWithAnalysis }) {
           {(post.comments ?? 0) > 0 && <span>💬 {post.comments}</span>}
         </div>
       </article>
+    </Link>
+  );
+}
+
+function PhonePick({ post }: { post: PostCardWithAnalysis }) {
+  const title = post.title.replace(/^Show HN:\s*/i, "");
+  const href = `/post/${post.id}/${slugify(post.title)}`;
+  const tier = safeParseTier(post.analysis?.tier);
+  const reason = post.analysis?.pickReason || post.analysis?.summary || "";
+
+  return (
+    <Link href={href} prefetch={false} className="block px-4 py-3 active:bg-muted/60">
+      <div className="flex items-center gap-2 mb-1">
+        {tier && (
+          <span className={`inline-flex shrink-0 items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold uppercase ${tierBadgeStyles[tier] || ""}`}>
+            <span className="tracking-tighter">{TIER_DOTS[tier]}</span>
+            {TIER_LABELS[tier]}
+          </span>
+        )}
+        {post.analysis?.category && (
+          <span className="text-[10px] text-muted-foreground truncate">{post.analysis.category}</span>
+        )}
+        <span className="ml-auto shrink-0 text-[11px] text-muted-foreground">
+          ▲ {post.points}
+          {(post.comments ?? 0) > 0 && <> · 💬 {post.comments}</>}
+        </span>
+      </div>
+      <h3 className="font-semibold text-[15px] leading-snug line-clamp-2">{title}</h3>
+      {reason && <p className="text-xs text-muted-foreground italic line-clamp-1 mt-0.5">{reason}</p>}
     </Link>
   );
 }

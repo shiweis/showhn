@@ -333,7 +333,21 @@ export default async function PostPage({ params }: Props) {
             {similarTo.length > 0 && (
               <div>
                 <span className="text-xs font-medium text-muted-foreground uppercase tracking-wider">Similar To</span>
-                <p className="mt-1 text-sm">{similarTo.join(" · ")}</p>
+                <p className="mt-1 text-sm">
+                  {similarTo.map((name, index) => (
+                    <span key={name}>
+                      {index > 0 && " · "}
+                      <Link
+                        href={`/search?q=${encodeURIComponent(`"${name.replace(/"/g, "")}"`)}`}
+                        prefetch={false}
+                        title={`Find projects compared to ${name}`}
+                        className="underline decoration-muted-foreground/50 underline-offset-4 hover:text-primary hover:decoration-primary transition-colors"
+                      >
+                        {name}
+                      </Link>
+                    </span>
+                  ))}
+                </p>
               </div>
             )}
           </div>
