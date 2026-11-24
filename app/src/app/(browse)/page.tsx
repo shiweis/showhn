@@ -2,7 +2,7 @@ import { Suspense } from "react";
 import { PostGrid } from "@/components/post-grid";
 import { FilterBar } from "@/components/filter-bar";
 import { HeroPicks } from "@/components/hero-picks";
-import { getPosts, getCategories, getFeaturedPosts } from "@/lib/db/queries";
+import { getPostsCached, getCategories, getFeaturedPosts } from "@/lib/db/queries";
 import { normalizeCategories, normalizeSort, normalizeTime } from "@/lib/post-filters";
 
 export default async function Home({
@@ -19,7 +19,7 @@ export default async function Home({
   const isDefaultView = categories.length === 0 && time === "week" && sort === "newest";
 
   const [{ posts, total }, allCategories, featured] = await Promise.all([
-    getPosts({ time, sort, categories }),
+    getPostsCached({ time, sort, categories }),
     getCategories(),
     isDefaultView ? getFeaturedPosts(3) : Promise.resolve([]),
   ]);

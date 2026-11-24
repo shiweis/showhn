@@ -1,7 +1,7 @@
 import { Suspense } from "react";
 import { PostGrid } from "@/components/post-grid";
 import { FilterBar } from "@/components/filter-bar";
-import { getPosts, getCategories } from "@/lib/db/queries";
+import { getPostsCached, getCategories } from "@/lib/db/queries";
 import { notFound } from "next/navigation";
 import type { Metadata } from "next";
 import { JsonLd } from "@/components/json-ld";
@@ -69,7 +69,7 @@ export default async function CategoryPage({ params, searchParams }: Props) {
   const sort = normalizeSort(sp.sort, CATEGORY_FILTER_DEFAULTS.sort);
 
   const [{ posts, total }, allCategories] = await Promise.all([
-    getPosts({ time, sort, categories: [categoryName] }),
+    getPostsCached({ time, sort, categories: [categoryName] }),
     getCategories(),
   ]);
 

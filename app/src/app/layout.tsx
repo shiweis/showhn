@@ -1,10 +1,12 @@
 import type { Metadata } from "next";
+import { Suspense } from "react";
 import { headers } from "next/headers";
 import { JsonLd } from "@/components/json-ld";
 import { Geist, Geist_Mono, Sora } from "next/font/google";
 import Link from "next/link";
 import { ThemeProvider } from "@/components/theme-provider";
 import { Header } from "@/components/header";
+import { RememberLists } from "@/components/back-to-browse";
 import "./globals.css";
 
 const geistSans = Geist({
@@ -93,6 +95,9 @@ export default async function RootLayout({
               },
           }}
         />
+        <Suspense fallback={null}>
+          <RememberLists />
+        </Suspense>
         <ThemeProvider>
           <div className="min-h-screen flex flex-col">
             <Header />

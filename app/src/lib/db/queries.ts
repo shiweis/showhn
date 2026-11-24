@@ -2,6 +2,7 @@ import { db } from "./index";
 import { posts, aiAnalysis } from "./schema";
 import { desc, eq, gte, ne, and, inArray, sql } from "drizzle-orm";
 import { ftsQuery } from "../search-query";
+import { createShortCache } from "../short-cache";
 import type { Post, AiAnalysis } from "./schema";
 import type { PostCardWithAnalysis } from "./card-types";
 import type { SortOption, TimeRange } from "../post-filters";
@@ -178,6 +179,29 @@ export async function getPosts({
     posts: results.map((r) => ({ ...r.post, analysis: r.analysis })),
     total,
   };
+}
+
+/** How long an all-time list is reused. */
+const ALL_TIME_LIST_TTL_MS = 5 * 60_000;
+const allTimeLists = createShortCache({ ttlMs: ALL_TIME_LIST_TTL_MS, maxEntries: 200 });
+
+/**
+ * `getPosts` for the pages. A view over all time counts or sorts every post
+ * and barely changes from one minute to the next, so its answer is reused for
+ * a few minutes. Views over a recent period are quick and always read fresh.
+ */
+export function getPostsCached(
+  options: Parameters<typeof getPosts>[0] = {},
+): ReturnType<typeof getPosts> {
+  if (options.time !== "all") return getPosts(options);
+  const key = JSON.stringify([
+    options.sort ?? "newest",
+    [...(options.categories ?? [])].sort(),
+    options.limit ?? 48,
+    options.offset ?? 0,
+    options.includeTotal ?? true,
+  ]);
+  return allTimeLists.get(key, () => getPosts(options));
 }
 
 export async function getCategories(): Promise<string[]> {

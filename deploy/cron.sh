@@ -36,11 +36,19 @@ fi
 
 cd "$APP_DIR"
 
+# One dated line per run. Ingest and the index rebuild print no clock time of
+# their own, so without it nothing in their logs says when a run happened.
+stamp() {
+  echo "[cron] $(date -u +%Y-%m-%dT%H:%M:%SZ) $1" >> "$2"
+}
+
 case "${1:-}" in
   ingest)
+    stamp "ingest starts" "$LOG_DIR/ingest.log"
     ./node_modules/.bin/tsx scripts/ingest.ts >> "$LOG_DIR/ingest.log" 2>&1
     ;;
   fts)
+    stamp "search index rebuild starts" "$LOG_DIR/fts.log"
     ./node_modules/.bin/tsx scripts/setup-fts.ts >> "$LOG_DIR/fts.log" 2>&1
     ;;
   health)
@@ -48,7 +56,9 @@ case "${1:-}" in
     ./node_modules/.bin/tsx scripts/health-check.ts >> "$LOG_DIR/health.log" 2>&1
     ;;
   all)
+    stamp "ingest starts" "$LOG_DIR/ingest.log"
     ./node_modules/.bin/tsx scripts/ingest.ts >> "$LOG_DIR/ingest.log" 2>&1
+    stamp "search index rebuild starts" "$LOG_DIR/fts.log"
     ./node_modules/.bin/tsx scripts/setup-fts.ts >> "$LOG_DIR/fts.log" 2>&1
     ;;
   *)

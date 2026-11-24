@@ -27,6 +27,7 @@ import type { Metadata } from "next";
 import { ShareButton } from "@/components/share-button";
 import { PostCard } from "@/components/post-card";
 import { JsonLd } from "@/components/json-ld";
+import { BackToBrowse } from "@/components/back-to-browse";
 
 type Props = {
   params: Promise<{ id: string; slug: string }>;
@@ -173,13 +174,7 @@ export default async function PostPage({ params }: Props) {
   return (
     <div className="max-w-4xl mx-auto">
       <JsonLd data={structuredData} />
-      <Link
-        href="/"
-        className="inline-flex items-center gap-1 text-sm text-muted-foreground hover:text-foreground transition-colors mb-4"
-      >
-        <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="m12 19-7-7 7-7"/><path d="M19 12H5"/></svg>
-        Back to browse
-      </Link>
+      <BackToBrowse className="mb-4" />
 
       {/* Screenshot / GitHub hero — hidden for text-only posts */}
       {!!(post.githubStars != null || post.hasScreenshot) && (

@@ -1,7 +1,7 @@
 import { PostCard } from "@/components/post-card";
 import { getDivergenceData } from "@/lib/db/trends-queries";
-import Link from "next/link";
 import type { Metadata } from "next";
+import { BackToBrowse } from "@/components/back-to-browse";
 
 export const metadata: Metadata = {
   title: "AI vs HN",
@@ -21,13 +21,7 @@ export default async function DivergencePage() {
   return (
     <>
       <div className="mb-8">
-        <Link
-          href="/"
-          className="inline-flex items-center gap-1 text-sm text-muted-foreground hover:text-foreground transition-colors mb-3"
-        >
-          <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="m12 19-7-7 7-7"/><path d="M19 12H5"/></svg>
-          Back to browse
-        </Link>
+        <BackToBrowse className="mb-3" />
 
         <h1 className="text-2xl sm:text-3xl font-display font-bold">AI vs HN</h1>
         <p className="text-muted-foreground mt-1 max-w-2xl">
@@ -63,7 +57,7 @@ export default async function DivergencePage() {
             Hidden Gems
           </h2>
           <p className="text-sm text-muted-foreground mb-4">
-            Rated gem by our AI &mdash; but HN gave them 10 points or fewer.
+            Rated gem by our AI &mdash; but after two days HN had given them 10 points or fewer.
           </p>
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
             {gems.map((post) => (

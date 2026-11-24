@@ -1,6 +1,6 @@
 "use server";
 
-import { getPosts } from "@/lib/db/queries";
+import { getPostsCached } from "@/lib/db/queries";
 import { db } from "@/lib/db";
 import { subscribers } from "@/lib/db/schema";
 import type { PostCardWithAnalysis } from "@/lib/db/card-types";
@@ -33,7 +33,7 @@ export async function loadMorePosts({
   const safeOffset = normalizeInteger(offset, 0, 0, 1_000_000);
   const safeCategories = normalizeCategories(categories);
 
-  const { posts } = await getPosts({
+  const { posts } = await getPostsCached({
     time: safeTime,
     sort: safeSort,
     categories: safeCategories,
