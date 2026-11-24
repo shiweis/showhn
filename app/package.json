@@ -17,7 +17,8 @@
     "worker": "tsx scripts/worker.ts",
     "ingest": "tsx scripts/ingest.ts",
     "requeue": "tsx scripts/requeue.ts",
-    "health": "tsx scripts/health-check.ts"
+    "health": "tsx scripts/health-check.ts",
+    "backup": "tsx scripts/backup-db.ts"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.74.0",

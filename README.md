@@ -78,6 +78,7 @@ The app runs on port 3000 by default. Override with `PORT=3333 npm run dev`.
 | `scripts/backfill-thumbnails.ts` | Generate thumbnail images from full screenshots. |
 | `scripts/setup-fts.ts` | Rebuild the FTS5 search index. Run after ingestion. |
 | `scripts/health-check.ts` | Report whether new posts are arriving and getting verdicts. Runs from cron; see [Production Deployment](#production-deployment). |
+| `scripts/backup-db.ts` | Write a compressed snapshot of the database to `data/backups` and keep the newest seven. Runs from cron; see [Production Deployment](#production-deployment). |
 | `scripts/baseline-migrations.ts` | Adopt migration tracking for a pre-migration database after making a backup. Requires `--yes`. |
 | `scripts/analytics.sh` | Pull Umami analytics from CLI. Usage: `./scripts/analytics.sh [site] [period]`. Sites: `all`, `hn`, `shiwei`, `everglades`, `burin`. Periods: `today`, `24h`, `7d`, `30d`. |
 | `scripts/analyze-stopwords.sh` | Corpus analysis for FTS stopwords. Finds terms appearing in 15+ of 16 categories. Run every few months to update the stopword list in `queries.ts` as the corpus grows. |
@@ -101,6 +102,7 @@ See [`.env.example`](app/.env.example) for all available options:
 | `GITHUB_TOKEN` | — | GitHub API token (optional, raises rate limit from 60 to 5000 req/hr) |
 | `REMOVED_POST_IDS` | — | HN post ids removed at their author's request, comma-separated; ingest skips them. Set in `.env.local` only |
 | `HEALTH_PING_URL` | — | Where the health check reports: the ping address of a Healthchecks.io check or a compatible service. Set in `.env.local` only |
+| `BACKUP_DIR` | `data/backups` | Where the nightly database snapshots go |
 
 ### Existing databases
 
@@ -110,7 +112,7 @@ Databases created before versioned migrations already have the current schema bu
 
 Run `npm run check` before deployment. It covers ESLint, application and worker script type checking, and the automated security/queue/AI tests. `npm audit` should also report zero known vulnerabilities.
 
-HTML routes render dynamically because the strict Content Security Policy uses a fresh script nonce on every response. SQLite queries remain local and static assets keep their normal long-lived caching.
+HTML routes render dynamically because the strict Content Security Policy uses a fresh script nonce on every response. SQLite queries remain local and static assets keep their normal long-lived caching. The views over all time and the AI vs HN page count or sort every post, so their query results are reused for five minutes in the web process.
 
 ## Production Deployment
 
@@ -127,6 +129,8 @@ Uses the path-portable root [`ecosystem.config.js`](ecosystem.config.js) for PM2
 PM2 keeps each process's output in `~/.pm2/logs/`, and the cron script appends to `logs/` in the repository root. PM2 writes the date, time and UTC offset in front of every worker line (`log_date_format` in the PM2 configuration), and the cron script starts each ingest and index-rebuild run with a dated `[cron]` line. [`deploy/logrotate.conf`](deploy/logrotate.conf) rotates all of these logs once a month, or sooner when one passes 50 MB, and keeps 12 compressed copies; its first lines say how to install it.
 
 Nothing in PM2 or on the site shows when ingest or analysis stops, so `deploy/cron.sh health` checks every half hour and writes one line to `logs/health.log`. It reports a problem when at least 8 of the 10 newest posts older than two hours have no verdict, or when no new post has arrived for six hours. To get an email, create a check at [Healthchecks.io](https://healthchecks.io) or a compatible service, with a period of 30 minutes and a grace time of 1 hour, and put its ping address in `HEALTH_PING_URL`. The service then mails you when the check reports a problem and when the reports stop coming, which also covers the server being down.
+
+`deploy/cron.sh backup` writes a compressed snapshot of the database to `app/data/backups` every night and keeps the newest seven, with one line per run in `logs/backup.log`. It uses SQLite's own backup, so the site and the worker keep running, and it checks the copy before packing it; at 38,000 posts a snapshot is about 100 MB and takes 15 seconds. The snapshots sit on the same disk as the database: they cover a bad migration, a wrong bulk update or a damaged file, not the loss of the disk, so copy the folder somewhere else as well. To restore one, stop the site and the worker, unpack it over the database with `gunzip -c app/data/backups/showhn-<day>.db.gz > app/data/showhn.db`, delete `showhn.db-wal` and `showhn.db-shm` if they exist, and start both again.
 
 ## Project Structure
 

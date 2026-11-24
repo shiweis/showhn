@@ -10,9 +10,13 @@
 #   */30 * * * *  /path/to/deploy/cron.sh ingest
 #   0 3 * * *     /path/to/deploy/cron.sh fts
 #   20,50 * * * * /path/to/deploy/cron.sh health
+#   40 3 * * *    /path/to/deploy/cron.sh backup
 #
 # The health check tells you when ingest or analysis has stopped, once
 # HEALTH_PING_URL is set (see app/.env.example). It only reads the database.
+#
+# The backup writes a compressed copy of the database to app/data/backups and
+# keeps the newest seven. It runs while the site and the worker are up.
 #
 # The worker (pm2 start ecosystem.config.cjs) continuously processes
 # screenshot and analyze tasks enqueued by ingest.
@@ -55,6 +59,10 @@ case "${1:-}" in
     # Exits 1 when it finds a problem; the line it logs says which.
     ./node_modules/.bin/tsx scripts/health-check.ts >> "$LOG_DIR/health.log" 2>&1
     ;;
+  backup)
+    # Exits 1 when no snapshot could be written; the line it logs says why.
+    ./node_modules/.bin/tsx scripts/backup-db.ts >> "$LOG_DIR/backup.log" 2>&1
+    ;;
   all)
     stamp "ingest starts" "$LOG_DIR/ingest.log"
     ./node_modules/.bin/tsx scripts/ingest.ts >> "$LOG_DIR/ingest.log" 2>&1
@@ -62,7 +70,7 @@ case "${1:-}" in
     ./node_modules/.bin/tsx scripts/setup-fts.ts >> "$LOG_DIR/fts.log" 2>&1
     ;;
   *)
-    echo "Usage: $0 {ingest|fts|health|all}"
+    echo "Usage: $0 {ingest|fts|health|backup|all}"
     exit 1
     ;;
 esac

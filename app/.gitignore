@@ -47,6 +47,7 @@ next-env.d.ts
 /data/*.db-shm
 /data/*.bak*
 /data/evals/
+/data/backups/
 !/data/.gitkeep
 /public/screenshots/*
 !/public/screenshots/.gitkeep
